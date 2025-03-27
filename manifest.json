@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Counterstrikle Helper",
+  "version": "1.0",
+  "description": "游戏小助手",
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://*.blast.tv/*", "*://hltv.org/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["algorithm.js", "players.json", "websocket-interceptor.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+} 
