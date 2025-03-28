@@ -13,7 +13,7 @@ const ATTRIBUTES = {
   REGION: 'region'
 };
 
-// 定义类型的常量
+// 定义反馈类型的常量
 const FEEDBACK_RESULTS = {
   CORRECT: 'CORRECT',
   INCORRECT: 'INCORRECT',
@@ -40,10 +40,79 @@ class Algorithm {
   static consecutiveGuessCounts = 0;
   
   /**
-   * 找到最佳猜测
-   * @param {Array} candidates - 候选选手
-   * @param {Array} allPlayers - 所有选手
-   * @param {Array} attributesToCompare - 要比较的属性
+   * 计算信息熵: H(S) = log2(|S|)
+   * @param {Array} items - 项目列表
+   * @returns {number} - 熵值
+   */
+  static calculateEntropy(items) {
+    const n = items.length;
+    if (n <= 1) {
+      return 0.0;  // 当剩余0或1个项目时，不确定性为0
+    }
+    return Math.log2(n);  // 返回以2为底的对数值作为熵
+  }
+  
+  /**
+   * 获取完整的反馈元组，与Python版本get_feedback一致
+   * @param {Object} guessPlayer - 猜测的选手
+   * @param {Object} actualPlayer - 实际的目标选手
+   * @param {Array} attributes - 要比较的属性
+   * @returns {Array} - 反馈元组
+   */
+  static getCompleteFeedback(guessPlayer, actualPlayer, attributes) {
+    const feedback = [];
+    
+    for (const attr of attributes) {
+      if (!guessPlayer[attr] || !actualPlayer[attr]) {
+        feedback.push('unknown_attribute');
+        continue;
+      }
+      
+      if (attr === ATTRIBUTES.AGE) {
+        const diff = actualPlayer[attr] - guessPlayer[attr];
+        if (diff === 0) {
+          feedback.push('correct');
+        } else if (diff > 2) {
+          feedback.push('too_low');  // 猜测值过低
+        } else if (diff < -2) {
+          feedback.push('too_high');  // 猜测值过高
+        } else if (0 < diff && diff <= 2) {
+          feedback.push('slightly_low');  // 猜测值略低
+        } else if (-2 <= diff && diff < 0) {
+          feedback.push('slightly_high');  // 猜测值略高
+        }
+      } else if (attr === ATTRIBUTES.MAJOR_APPEARANCES) {
+        const diff = actualPlayer[attr] - guessPlayer[attr];
+        if (diff === 0) {
+          feedback.push('correct');
+        } else if (diff > 1) {
+          feedback.push('too_low');  // 猜测值过低
+        } else if (diff < -1) {
+          feedback.push('too_high');  // 猜测值过高
+        } else if (diff === 1) {
+          feedback.push('slightly_low');  // 猜测值略低
+        } else if (diff === -1) {
+          feedback.push('slightly_high');  // 猜测值略高
+        }
+      } else {
+        // 非数值型属性
+        if (guessPlayer[attr] === actualPlayer[attr]) {
+          feedback.push('correct');
+        } else {
+          feedback.push('incorrect');
+        }
+      }
+    }
+    
+    // 返回反馈元组，在JS中用数组表示
+    return feedback;
+  }
+  
+  /**
+   * 使用Python版本的信息熵方法找到最佳猜测
+   * @param {Array} candidates - 候选选手列表
+   * @param {Array} allPlayers - 所有选手列表
+   * @param {Array} attributesToCompare - 要比较的属性列表
    * @returns {Object|null} - 最佳猜测的选手
    */
   static findBestGuess(candidates, allPlayers, attributesToCompare = this.ATTRIBUTES_TO_COMPARE) {
@@ -57,121 +126,81 @@ class Algorithm {
       return candidates[0];
     }
     
-    // 特殊情况处理：两个候选人且属性相同
-    if (candidates.length === 2) {
-      const [player1, player2] = candidates;
-      
-      // 检查两个选手的关键属性是否完全相同
-      const allAttributesSame = attributesToCompare.every(attr => 
-        player1[attr] === player2[attr]
-      );
-      
-      // 如果属性完全相同，且已经连续猜测了同一个选手，则轮换选择
-      if (allAttributesSame && this.consecutiveGuessCounts >= 1) {
-        const nextGuess = this.lastGuessId === player1.id ? player2 : player1;
-        console.log(`检测到循环猜测，轮换到另一个选手: ${nextGuess.nickname}`);
-        this.lastGuessId = nextGuess.id;
-        this.consecutiveGuessCounts = 0; // 重置计数
-        return nextGuess;
+    let minExpectedEntropy = Infinity;
+    let bestGuess = null;
+    const numCandidates = candidates.length;
+    
+    console.log(`开始寻找最佳猜测，当前候选人数量: ${numCandidates}`);
+    
+    // 特殊情况处理：两个候选人且已经连续猜测同一个多次
+    if (candidates.length === 2 && this.lastGuessId && this.consecutiveGuessCounts >= 1) {
+      const otherCandidate = candidates.find(c => c.id !== this.lastGuessId);
+      if (otherCandidate) {
+        console.log(`只有两个候选人且连续猜测多次，选择不同的: ${otherCandidate.nickname}`);
+        this.lastGuessId = otherCandidate.id;
+        this.consecutiveGuessCounts = 0;
+        return otherCandidate;
       }
     }
     
-    // 使用信息熵方法计算每个候选人作为猜测的价值
-    let bestScore = -Infinity;
-    let bestCandidates = [];
-    
-    for (const player of candidates) {
-      // 计算这个玩家作为猜测的分数
-      const score = this.calculateGuessScore(player, candidates, attributesToCompare);
+    // 遍历所有候选人作为可能的猜测
+    for (const guessCandidate of candidates) {
+      // 模拟猜测这个候选人的所有可能结果
+      const outcomes = {};
       
-      // 记录最高分和所有获得最高分的选手
-      if (score > bestScore) {
-        bestScore = score;
-        bestCandidates = [player];
-      } else if (Math.abs(score - bestScore) < 0.0001) { // 允许微小的浮点数误差
-        bestCandidates.push(player);
+      for (const possibleTarget of candidates) {
+        // 获取如果possibleTarget是实际目标时的反馈
+        const feedback = this.getCompleteFeedback(guessCandidate, possibleTarget, attributesToCompare);
+        const feedbackKey = JSON.stringify(feedback); // 将反馈数组转为字符串作为键
+        
+        if (!outcomes[feedbackKey]) {
+          outcomes[feedbackKey] = [];
+        }
+        outcomes[feedbackKey].push(possibleTarget);
       }
-    }
-    
-    // 如果有多个最佳候选人，应用选择策略
-    if (bestCandidates.length > 1) {
-      // 如果连续猜测同一个选手超过一定次数，避免选择它
-      if (this.lastGuessId && this.consecutiveGuessCounts >= 1) {
-        // 排除上次猜测的选手
-        const filteredCandidates = bestCandidates.filter(p => p.id !== this.lastGuessId);
-        if (filteredCandidates.length > 0) {
-          // 从剩余候选人中随机选择一个
-          const randomIndex = Math.floor(Math.random() * filteredCandidates.length);
-          const nextGuess = filteredCandidates[randomIndex];
-          console.log(`避免重复猜测，选择新的候选人: ${nextGuess.nickname}`);
-          this.lastGuessId = nextGuess.id;
-          this.consecutiveGuessCounts = 0; // 重置计数
-          return nextGuess;
+      
+      // 计算期望熵
+      let expectedEntropy = 0.0;
+      for (const feedbackKey in outcomes) {
+        const subset = outcomes[feedbackKey];
+        const subsetSize = subset.length;
+        
+        if (subsetSize > 0) {
+          const probability = subsetSize / numCandidates;
+          const subsetEntropy = this.calculateEntropy(subset);
+          expectedEntropy += probability * subsetEntropy;
         }
       }
       
-      // 随机选择一个最佳候选人
-      const randomIndex = Math.floor(Math.random() * bestCandidates.length);
-      const selectedGuess = bestCandidates[randomIndex];
+      // Debug信息
+      console.log(`候选人 ${guessCandidate.nickname}, 期望熵: ${expectedEntropy.toFixed(4)}`);
       
-      // 更新猜测历史
-      this.updateGuessHistory(selectedGuess.id);
-      
-      return selectedGuess;
-    } else {
-      // 只有一个最佳候选人
-      const bestGuess = bestCandidates[0];
-      
-      // 更新猜测历史
-      this.updateGuessHistory(bestGuess.id);
-      
-      return bestGuess;
-    }
-  }
-  
-  /**
-   * 更新猜测历史
-   * @param {string} guessId - 猜测的选手ID
-   */
-  static updateGuessHistory(guessId) {
-    if (this.lastGuessId === guessId) {
-      this.consecutiveGuessCounts++;
-    } else {
-      this.lastGuessId = guessId;
-      this.consecutiveGuessCounts = 0;
-    }
-  }
-  
-  /**
-   * 计算猜测分数
-   * @param {Object} player - 要评估的选手
-   * @param {Array} candidates - 候选选手列表
-   * @param {Array} attributesToCompare - 要比较的属性列表
-   * @returns {number} - 猜测分数
-   */
-  static calculateGuessScore(player, candidates, attributesToCompare) {
-    let score = 0;
-    
-    // 根据属性分布计算分数
-    for (const attr of attributesToCompare) {
-      // 统计有多少候选人与当前玩家在这个属性上相同
-      let matchCount = 0;
-      
-      for (const candidate of candidates) {
-        if (candidate.id !== player.id) {
-          if (this.compareAttribute(player, candidate, attr) === FEEDBACK_RESULTS.CORRECT) {
-            matchCount++;
-          }
+      // 更新最佳猜测（选择期望熵最小的）
+      if (expectedEntropy < minExpectedEntropy) {
+        minExpectedEntropy = expectedEntropy;
+        bestGuess = guessCandidate;
+      } else if (Math.abs(expectedEntropy - minExpectedEntropy) < 0.0001) {
+        // 处理平局情况 - 如果连续猜测相同选手，优先选择不同选手
+        if (this.lastGuessId && guessCandidate.id !== this.lastGuessId && 
+            (bestGuess === null || bestGuess.id === this.lastGuessId)) {
+          console.log(`平局情况，选择不同于上次猜测的: ${guessCandidate.nickname}`);
+          bestGuess = guessCandidate;
         }
       }
-      
-      // 计算这个属性的分数 - 理想情况是分割候选人集合为一半一半
-      const idealSplit = candidates.length / 2;
-      const attrScore = 1 - Math.abs(matchCount - idealSplit) / idealSplit;
-      score += attrScore;
     }
     
-    return score;
+    // 更新猜测历史
+    if (bestGuess) {
+      if (this.lastGuessId === bestGuess.id) {
+        this.consecutiveGuessCounts++;
+      } else {
+        this.lastGuessId = bestGuess.id;
+        this.consecutiveGuessCounts = 0;
+      }
+      console.log(`最佳猜测: ${bestGuess.nickname}, 期望熵: ${minExpectedEntropy.toFixed(4)}, 连续次数: ${this.consecutiveGuessCounts}`);
+    }
+    
+    return bestGuess;
   }
   
   /**
@@ -258,6 +287,39 @@ class Algorithm {
   }
   
   /**
+   * 将外部反馈格式转换为内部使用的格式
+   * @param {Object} feedback - 外部反馈格式
+   * @returns {Object} - 标准化后的反馈
+   */
+  static normalizeGameFeedback(feedback) {
+    const normalized = {};
+    
+    for (const attr in feedback) {
+      const value = feedback[attr];
+      
+      // 统一转换为内部使用的反馈格式
+      if (value === FEEDBACK_RESULTS.CORRECT) {
+        normalized[attr] = 'correct';
+      } else if (value === FEEDBACK_RESULTS.HIGH_CLOSE) {
+        normalized[attr] = 'slightly_high';
+      } else if (value === FEEDBACK_RESULTS.LOW_CLOSE) {
+        normalized[attr] = 'slightly_low';
+      } else if (value === FEEDBACK_RESULTS.HIGH_NOT_CLOSE) {
+        normalized[attr] = 'too_high';
+      } else if (value === FEEDBACK_RESULTS.LOW_NOT_CLOSE) {
+        normalized[attr] = 'too_low';
+      } else if (value === FEEDBACK_RESULTS.INCORRECT_CLOSE) {
+        // 特殊情况，可能需要根据属性类型进行不同处理
+        normalized[attr] = 'incorrect';
+      } else {
+        normalized[attr] = 'incorrect';
+      }
+    }
+    
+    return normalized;
+  }
+  
+  /**
    * 根据反馈过滤候选人
    * @param {Array} candidates - 候选选手列表
    * @param {Object} lastGuess - 上次猜测的选手
@@ -273,6 +335,10 @@ class Algorithm {
     
     console.log('开始过滤候选人，反馈:', feedback);
     console.log('当前候选人数量:', candidates.length);
+    
+    // 将外部反馈格式转换为内部格式
+    const normalizedFeedback = this.normalizeGameFeedback(feedback);
+    console.log('标准化后的反馈:', normalizedFeedback);
     
     // 根据各属性反馈过滤候选人
     const result = candidates.filter(candidate => {
@@ -305,10 +371,10 @@ class Algorithm {
     
     console.log('过滤后的候选人数量:', result.length);
     
-    // 如果过滤后没有候选人，返回一个后备集合
+    // 如果过滤后没有候选人，直接返回原始候选人列表
     if (result.length === 0) {
-      console.warn('过滤后没有候选人，尝试宽松条件再次过滤');
-      return this.fallbackFilter(candidates, lastGuess, feedback);
+      console.warn('过滤后没有候选人，返回原始候选人列表');
+      return candidates;
     }
     
     return result;
@@ -403,31 +469,21 @@ class Algorithm {
   }
   
   /**
-   * 后备过滤方法，只使用最可靠的属性过滤
-   * @param {Array} candidates - 候选选手列表
-   * @param {Object} lastGuess - 上次猜测的选手
-   * @param {Object} feedback - 游戏反馈
-   * @returns {Array} - 过滤后的候选选手列表
+   * 初始化算法状态
    */
-  static fallbackFilter(candidates, lastGuess, feedback) {
-    console.log('使用后备过滤方法');
-    // 只使用team属性进行过滤，因为这通常是最可靠的
-    if (feedback.team === FEEDBACK_RESULTS.CORRECT) {
-      const result = candidates.filter(c => c.team === lastGuess.team);
-      if (result.length > 0) {
-        console.log('通过team过滤后的候选人数量:', result.length);
-        return result;
-      }
-    }
-    
-    // 如果过滤后仍然没有候选人，或者team反馈不是CORRECT，返回所有候选人
-    console.warn('后备过滤失败，返回所有候选人');
-    return candidates;
+  static init() {
+    this.lastGuessId = null;
+    this.consecutiveGuessCounts = 0;
+    console.log('算法模块已初始化');
+    return this;
   }
 }
+
+// 初始化模块
+Algorithm.init();
 
 // 为了旧的加载方式兼容
 window.AlgorithmModule = Algorithm;
 
 // 作为ES模块导出
-export default Algorithm; 
+export default Algorithm;
