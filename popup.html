@@ -239,6 +239,26 @@
       border-radius: 3px;
       margin-left: 5px;
     }
+    
+    /* 数字输入框样式 */
+    .interval-input {
+      display: flex;
+      align-items: center;
+    }
+    
+    .number-input {
+      width: 70px;
+      padding: 4px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 14px;
+      text-align: center;
+    }
+    
+    .number-input:focus {
+      border-color: #2196F3;
+      outline: none;
+    }
   </style>
 </head>
 <body>
@@ -271,8 +291,15 @@
     </label>
   </div>
   
+  <div class="option">
+    <span class="option-label">猜测间隔 (毫秒)</span>
+    <div class="interval-input">
+      <input type="number" id="guessIntervalInput" min="0" max="15000" step="100" value="5000" class="number-input">
+    </div>
+  </div>
+  
   <div class="button-container">
-    <button id="algorithmTestButton" class="test-button">本地测试</button>
+    <button id="algorithmTestButton" class="test-button">算法测试</button>
   </div>
   
   <div class="test-results" id="testResults">
@@ -298,7 +325,7 @@
   </div>
   
   <div class="footer">
-    <span>© 2023 Counterstrikle Helper</span>
+    <span>© 2025 Counterstrikle Helper</span>
   </div>
   
   <script src="popup.js"></script>

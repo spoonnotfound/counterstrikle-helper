@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Counterstrikle Helper",
-  "version": "1.0",
+  "version": "0.1.0",
   "description": "游戏小助手",
   "action": {
     "default_popup": "popup.html"
@@ -11,7 +11,7 @@
   ],
   "content_scripts": [
     {
-      "matches": ["*://*.blast.tv/*", "*://hltv.org/*"],
+      "matches": ["*://*.blast.tv/*"],
       "js": ["content.js"],
       "run_at": "document_start"
     }

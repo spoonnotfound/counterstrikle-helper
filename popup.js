@@ -1,73 +1,181 @@
-// 弹出窗口加载完成后执行
-document.addEventListener('DOMContentLoaded', async () => {
-  // 获取元素
-  const autoPlayToggle = document.getElementById('autoPlayToggle');
-  const playerCountElement = document.getElementById('playerCount');
-  const gamePhaseElement = document.getElementById('gamePhase');
-  const candidatesCountElement = document.getElementById('candidatesCount');
-  const guessCountElement = document.getElementById('guessCount');
-  const algorithmTestButton = document.getElementById('algorithmTestButton');
-  const testResultsContainer = document.getElementById('testResults');
-  const testProgressElement = document.getElementById('testProgress');
-  const progressBarElement = document.getElementById('progressBar');
-  const successRateElement = document.getElementById('successRate');
-  const avgGuessesElement = document.getElementById('avgGuesses');
+/**
+ * Counterstrikle Helper 弹出窗口脚本
+ */
+
+// 在 DOMContentLoaded 事件触发时初始化
+document.addEventListener('DOMContentLoaded', initialize);
+
+/**
+ * 弹出窗口元素缓存
+ */
+const UI = {
+  // 控制元素
+  autoPlayToggle: null,
+  algorithmTestButton: null,
+  guessIntervalInput: null,
   
-  // 从存储中加载设置
-  const settings = await chrome.storage.local.get(['autoPlay']);
-  autoPlayToggle.checked = settings.autoPlay || false;
+  // 状态显示元素
+  playerCountElement: null,
+  gamePhaseElement: null,
+  candidatesCountElement: null,
+  guessCountElement: null,
   
-  // 监听自动模式开关
-  autoPlayToggle.addEventListener('change', () => {
-    const isEnabled = autoPlayToggle.checked;
+  // 测试结果元素
+  testResultsContainer: null,
+  testProgressElement: null,
+  progressBarElement: null,
+  successRateElement: null,
+  avgGuessesElement: null,
+  failedTestsContainer: null,
+  failedTestsList: null,
+  
+  /**
+   * 初始化 UI 元素引用
+   */
+  initialize() {
+    // 获取控制元素
+    this.autoPlayToggle = document.getElementById('autoPlayToggle');
+    this.algorithmTestButton = document.getElementById('algorithmTestButton');
+    this.guessIntervalInput = document.getElementById('guessIntervalInput');
     
-    // 发送消息到内容脚本
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]) {
-        chrome.tabs.sendMessage(tabs[0].id, {
-          action: 'toggleAutoPlay',
-          value: isEnabled
-        });
-      }
-    });
+    // 获取状态显示元素
+    this.playerCountElement = document.getElementById('playerCount');
+    this.gamePhaseElement = document.getElementById('gamePhase');
+    this.candidatesCountElement = document.getElementById('candidatesCount');
+    this.guessCountElement = document.getElementById('guessCount');
     
-    // 保存设置
-    chrome.storage.local.set({ autoPlay: isEnabled });
-  });
+    // 获取测试结果元素
+    this.testResultsContainer = document.getElementById('testResults');
+    this.testProgressElement = document.getElementById('testProgress');
+    this.progressBarElement = document.getElementById('progressBar');
+    this.successRateElement = document.getElementById('successRate');
+    this.avgGuessesElement = document.getElementById('avgGuesses');
+    this.failedTestsContainer = document.getElementById('failedTestsContainer');
+    this.failedTestsList = document.getElementById('failedTestsList');
+  }
+};
+
+/**
+ * 初始化弹出窗口
+ */
+async function initialize() {
+  try {
+    console.log('弹出窗口初始化开始');
+    
+    // 初始化 UI 元素
+    UI.initialize();
+    
+    // 加载设置
+    await loadSettings();
+    
+    // 设置事件监听器
+    setupEventListeners();
+    
+    // 获取玩家数据数量
+    requestPlayerCount();
+    
+    // 设置消息监听
+    setupMessageListeners();
+    
+    console.log('弹出窗口已加载完成');
+  } catch (error) {
+    console.error('弹出窗口初始化失败:', error);
+  }
+}
+
+/**
+ * 从存储中加载设置
+ */
+async function loadSettings() {
+  try {
+    const settings = await chrome.storage.local.get(['autoPlay', 'guessInterval']);
+    UI.autoPlayToggle.checked = settings.autoPlay || false;
+    UI.guessIntervalInput.value = settings.guessInterval || 5000;
+  } catch (error) {
+    console.error('加载设置失败:', error);
+  }
+}
+
+/**
+ * 设置事件监听器
+ */
+function setupEventListeners() {
+  // 自动模式开关事件
+  UI.autoPlayToggle.addEventListener('change', handleAutoPlayToggle);
+  
+  // 猜测间隔事件
+  UI.guessIntervalInput.addEventListener('change', handleGuessIntervalChange);
   
   // 算法测试按钮点击事件
-  algorithmTestButton.addEventListener('click', () => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]) {
-        // 向内容脚本发送全量测试命令
-        chrome.tabs.sendMessage(tabs[0].id, { 
-          action: 'startAlgorithmTest',
-          options: {
-            testAll: true,
-            detailed: true // 启用详细诊断信息
-          }
-        });
-        
-        // 提供用户反馈
-        algorithmTestButton.textContent = '测试中...';
-        algorithmTestButton.disabled = true;
-        
-        // 显示测试结果容器
-        testResultsContainer.style.display = 'block';
-      }
-    });
+  UI.algorithmTestButton.addEventListener('click', handleAlgorithmTest);
+}
+
+/**
+ * 处理自动模式开关
+ */
+function handleAutoPlayToggle() {
+  const isEnabled = UI.autoPlayToggle.checked;
+  
+  // 发送消息到内容脚本
+  sendMessageToActiveTab({
+    action: 'toggleAutoPlay',
+    value: isEnabled
   });
   
-  // 获取玩家数据数量
-  chrome.runtime.sendMessage({ action: 'getPlayerCount' }, (response) => {
-    if (response && response.count) {
-      playerCountElement.textContent = response.count;
-    } else {
-      playerCountElement.textContent = '未加载';
+  // 保存设置
+  chrome.storage.local.set({ autoPlay: isEnabled });
+}
+
+/**
+ * 处理算法测试按钮点击
+ */
+function handleAlgorithmTest() {
+  // 向内容脚本发送全量测试命令
+  sendMessageToActiveTab({ 
+    action: 'startAlgorithmTest',
+    options: {
+      testAll: true,
+      detailed: true // 启用详细诊断信息
     }
   });
   
-  // 监听来自content.js的状态更新
+  // 提供用户反馈
+  UI.algorithmTestButton.textContent = '测试中...';
+  UI.algorithmTestButton.disabled = true;
+  
+  // 显示测试结果容器
+  UI.testResultsContainer.style.display = 'block';
+}
+
+/**
+ * 发送消息到当前活动标签页
+ * @param {Object} message - 要发送的消息
+ */
+function sendMessageToActiveTab(message) {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs[0]) {
+      chrome.tabs.sendMessage(tabs[0].id, message);
+    }
+  });
+}
+
+/**
+ * 请求玩家数据数量
+ */
+function requestPlayerCount() {
+  chrome.runtime.sendMessage({ action: 'getPlayerCount' }, (response) => {
+    if (response && response.count) {
+      UI.playerCountElement.textContent = response.count;
+    } else {
+      UI.playerCountElement.textContent = '未加载';
+    }
+  });
+}
+
+/**
+ * 设置消息监听器
+ */
+function setupMessageListeners() {
   chrome.runtime.onMessage.addListener((message) => {
     if (message.action === 'statusUpdate' && message.status) {
       updateUIWithStatus(message.status);
@@ -78,136 +186,188 @@ document.addEventListener('DOMContentLoaded', async () => {
       // 测试完成，更新最终结果
       updateTestResults(message.results);
       // 恢复按钮状态
-      algorithmTestButton.textContent = '算法测试';
-      algorithmTestButton.disabled = false;
+      UI.algorithmTestButton.textContent = '本地测试';
+      UI.algorithmTestButton.disabled = false;
     }
   });
+}
+
+/**
+ * 更新算法测试进度
+ * @param {Object} data - 进度数据
+ */
+function updateTestProgress(data) {
+  const { current, total, successCount } = data;
   
-  // 更新算法测试进度
-  function updateTestProgress(data) {
-    const { current, total, successCount } = data;
-    
-    // 更新进度文本
-    testProgressElement.textContent = `${current}/${total}`;
-    
-    // 更新进度条
-    const percent = (current / total) * 100;
-    progressBarElement.style.width = `${percent}%`;
-    
-    // 更新成功率
-    const successRate = ((successCount / current) * 100).toFixed(1);
-    successRateElement.textContent = `${successRate}%`;
+  // 更新进度文本
+  UI.testProgressElement.textContent = `${current}/${total}`;
+  
+  // 更新进度条
+  const percent = (current / total) * 100;
+  UI.progressBarElement.style.width = `${percent}%`;
+  
+  // 更新成功率
+  const successRate = ((successCount / current) * 100).toFixed(1);
+  UI.successRateElement.textContent = `${successRate}%`;
+}
+
+/**
+ * 更新算法测试最终结果
+ * @param {Object} results - 测试结果
+ */
+function updateTestResults(results) {
+  const { successCount, totalTests, totalGuesses, failedTests } = results;
+  
+  // 更新成功率
+  const successRate = ((successCount / totalTests) * 100).toFixed(1);
+  UI.successRateElement.textContent = `${successRate}% (${successCount}/${totalTests})`;
+  
+  // 更新平均猜测次数
+  const avgGuesses = (totalGuesses / totalTests).toFixed(1);
+  UI.avgGuessesElement.textContent = avgGuesses;
+  
+  // 更新失败用例列表
+  updateFailedTestsList(failedTests);
+}
+
+/**
+ * 更新失败用例列表
+ * @param {Array} failedTests - 失败的测试用例
+ */
+function updateFailedTestsList(failedTests) {
+  // 清空现有内容
+  UI.failedTestsList.innerHTML = '';
+  
+  // 如果没有失败用例，隐藏容器
+  if (!failedTests || failedTests.length === 0) {
+    UI.failedTestsContainer.style.display = 'none';
+    return;
   }
   
-  // 更新算法测试最终结果
-  function updateTestResults(results) {
-    const { successCount, totalTests, totalGuesses, failedTests } = results;
-    
-    // 更新成功率
-    const successRate = ((successCount / totalTests) * 100).toFixed(1);
-    successRateElement.textContent = `${successRate}% (${successCount}/${totalTests})`;
-    
-    // 更新平均猜测次数
-    const avgGuesses = (totalGuesses / totalTests).toFixed(1);
-    avgGuessesElement.textContent = avgGuesses;
-    
-    // 更新失败用例列表
-    const failedTestsContainer = document.getElementById('failedTestsContainer');
-    const failedTestsList = document.getElementById('failedTestsList');
-    
-    // 清空现有内容
-    failedTestsList.innerHTML = '';
-    
-    // 如果没有失败用例，隐藏容器
-    if (!failedTests || failedTests.length === 0) {
-      failedTestsContainer.style.display = 'none';
-      return;
-    }
-    
-    // 显示失败用例容器
-    failedTestsContainer.style.display = 'block';
-    
-    // 最多显示10个失败用例
-    const maxFailuresToShow = 10;
-    const testsToShow = failedTests.slice(0, maxFailuresToShow);
-    
-    // 添加每个失败用例
-    testsToShow.forEach(test => {
-      const failureItem = document.createElement('div');
-      failureItem.className = 'failure-item';
+  // 显示失败用例容器
+  UI.failedTestsContainer.style.display = 'block';
+  
+  // 最多显示10个失败用例
+  const maxFailuresToShow = 10;
+  const testsToShow = failedTests.slice(0, maxFailuresToShow);
+  
+  // 添加每个失败用例
+  testsToShow.forEach(test => displayFailedTest(test));
+  
+  // 如果还有更多失败用例，显示一条信息
+  if (failedTests.length > maxFailuresToShow) {
+    const moreFailures = document.createElement('div');
+    moreFailures.className = 'more-failures';
+    moreFailures.textContent = `还有 ${failedTests.length - maxFailuresToShow} 个失败用例未显示`;
+    UI.failedTestsList.appendChild(moreFailures);
+  }
+}
+
+/**
+ * 显示单个失败测试用例
+ * @param {Object} test - 失败的测试用例
+ */
+function displayFailedTest(test) {
+  const failureItem = document.createElement('div');
+  failureItem.className = 'failure-item';
+  
+  // 创建详细信息
+  let detailsHTML = `
+    <strong>${test.player}</strong> - ${test.reason} (猜测次数: ${test.guesses})<br>
+    <small>国籍: ${test.nationality}, 地区: ${test.region}, 年龄: ${test.age}, Major次数: ${test.majorAppearances}</small>
+  `;
+  
+  // 添加猜测历史
+  if (test.guessHistory && test.guessHistory.length > 0) {
+    detailsHTML += `<div class="guess-history">`;
+    test.guessHistory.forEach((guess, idx) => {
+      // 检查是否是重复猜测
+      const isRepeatedGuess = idx > 0 && test.guessHistory[idx-1].guessPlayer.id === guess.guessPlayer.id;
       
-      // 创建详细信息
-      let detailsHTML = `
-        <strong>${test.player}</strong> - ${test.reason} (猜测次数: ${test.guesses})<br>
-        <small>国籍: ${test.nationality}, 地区: ${test.region}, 年龄: ${test.age}, Major次数: ${test.majorAppearances}</small>
+      detailsHTML += `
+        <div class="guess-item ${isRepeatedGuess ? 'repeated-guess' : ''}">
+          <strong>猜测 ${idx+1}:</strong> ${guess.guessPlayer.nickname} 
+          (候选: ${guess.candidatesBefore} → ${guess.candidatesAfter})
+          ${isRepeatedGuess ? '<span class="repeated-label">重复</span>' : ''}
+          <br>
+          <small>
+            国籍: ${guess.feedback.nationality?.result || '-'}, 
+            地区: ${guess.feedback.region?.result || '-'}, 
+            年龄: ${guess.feedback.age?.result || '-'}, 
+            Major: ${guess.feedback.majorAppearances?.result || '-'}
+          </small>
+        </div>
       `;
-      
-      // 添加猜测历史
-      if (test.guessHistory && test.guessHistory.length > 0) {
-        detailsHTML += `<div class="guess-history">`;
-        test.guessHistory.forEach((guess, idx) => {
-          // 检查是否是重复猜测
-          const isRepeatedGuess = idx > 0 && test.guessHistory[idx-1].guessPlayer.id === guess.guessPlayer.id;
-          
-          detailsHTML += `
-            <div class="guess-item ${isRepeatedGuess ? 'repeated-guess' : ''}">
-              <strong>猜测 ${idx+1}:</strong> ${guess.guessPlayer.nickname} 
-              (候选: ${guess.candidatesBefore} → ${guess.candidatesAfter})
-              ${isRepeatedGuess ? '<span class="repeated-label">重复</span>' : ''}
-              <br>
-              <small>
-                国籍: ${guess.feedback.nationality?.result || '-'}, 
-                地区: ${guess.feedback.region?.result || '-'}, 
-                年龄: ${guess.feedback.age?.result || '-'}, 
-                Major: ${guess.feedback.majorAppearances?.result || '-'}
-              </small>
-            </div>
-          `;
-        });
-        detailsHTML += `</div>`;
-      }
-      
-      failureItem.innerHTML = detailsHTML;
-      failedTestsList.appendChild(failureItem);
     });
-    
-    // 如果还有更多失败用例，显示一条信息
-    if (failedTests.length > maxFailuresToShow) {
-      const moreFailures = document.createElement('div');
-      moreFailures.className = 'more-failures';
-      moreFailures.textContent = `还有 ${failedTests.length - maxFailuresToShow} 个失败用例未显示`;
-      failedTestsList.appendChild(moreFailures);
-    }
+    detailsHTML += `</div>`;
   }
   
-  // 根据状态更新UI
-  function updateUIWithStatus(status) {
-    // 更新界面显示
-    gamePhaseElement.textContent = getGamePhaseText(status.gamePhase);
-    candidatesCountElement.textContent = status.candidatesCount || '-';
-    guessCountElement.textContent = status.guessCount || '-';
-    
-    // 更新连接状态
-    if (status.connectionActive) {
-      gamePhaseElement.classList.add('connected');
-    } else {
-      gamePhaseElement.classList.remove('connected');
-    }
+  failureItem.innerHTML = detailsHTML;
+  UI.failedTestsList.appendChild(failureItem);
+}
+
+/**
+ * 根据状态更新UI
+ * @param {Object} status - 游戏状态
+ */
+function updateUIWithStatus(status) {
+  // 更新界面显示
+  UI.gamePhaseElement.textContent = getGamePhaseText(status.gamePhase);
+  UI.candidatesCountElement.textContent = status.candidatesCount || '-';
+  UI.guessCountElement.textContent = status.guessCount || '-';
+  
+  // 更新控制元素
+  if (status.guessInterval !== undefined && UI.guessIntervalInput.value != status.guessInterval) {
+    UI.guessIntervalInput.value = status.guessInterval;
   }
   
-  // 转换游戏阶段文本
-  function getGamePhaseText(phase) {
-    if (!phase) return '未检测到游戏';
-    
-    const phaseMap = {
-      'lobby': '等待中',
-      'game': '游戏进行中',
-      'results': '游戏结束'
-    };
-    
-    return phaseMap[phase] || phase;
+  // 更新连接状态
+  if (status.connectionActive) {
+    UI.gamePhaseElement.classList.add('connected');
+  } else {
+    UI.gamePhaseElement.classList.remove('connected');
+  }
+}
+
+/**
+ * 转换游戏阶段文本
+ * @param {string} phase - 游戏阶段
+ * @returns {string} - 显示文本
+ */
+function getGamePhaseText(phase) {
+  if (!phase) return '未检测到游戏';
+  
+  const phaseMap = {
+    'lobby': '等待中',
+    'game': '游戏进行中',
+    'results': '游戏结束'
+  };
+  
+  return phaseMap[phase] || phase;
+}
+
+/**
+ * 处理猜测间隔变化
+ */
+function handleGuessIntervalChange() {
+  // 获取输入值并确保在有效范围内
+  let interval = parseInt(UI.guessIntervalInput.value);
+  
+  // 限制最小和最大值
+  if (isNaN(interval) || interval < 0) {
+    interval = 0;
+    UI.guessIntervalInput.value = 0;
+  } else if (interval > 15000) {
+    interval = 15000;
+    UI.guessIntervalInput.value = 15000;
   }
   
-  // 显示弹出窗口已加载消息
-  console.log('弹出窗口已加载');
-}); 
+  // 发送消息到内容脚本
+  sendMessageToActiveTab({
+    action: 'setGuessInterval',
+    value: interval
+  });
+  
+  // 保存设置
+  chrome.storage.local.set({ guessInterval: interval });
+} 

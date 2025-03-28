@@ -1,56 +1,104 @@
-// 全局变量
-let allPlayers = [];
-let currentCandidates = [];
-let lastGuess = null;
-let autoPlayEnabled = false;
-let guessCount = 0;
-let originalWebSocketSend = null;
-let activeSocket = null;
-let connectionId = "";
-let gamePhase = null;
-let algo = null; // 将在加载算法后赋值
+/**
+ * Counterstrikle Helper 内容脚本
+ * 处理页面交互和游戏逻辑
+ */
 
-// 初始化
+// 状态管理
+const GameState = {
+  // 玩家数据
+  allPlayers: [],
+  currentCandidates: [],
+  lastGuess: null,
+  
+  // 游戏状态
+  autoPlayEnabled: false,
+  guessCount: 0,
+  gamePhase: null,
+  
+  // WebSocket 相关
+  activeSocket: null,
+  connectionId: "",
+  
+  // 算法模块引用
+  algorithm: null,
+  
+  // 猜测设置
+  guessInterval: 5000, // 默认1.5秒
+  
+  // 重置游戏
+  reset() {
+    this.currentCandidates = [...this.allPlayers];
+    this.lastGuess = null;
+    this.guessCount = 0;
+    console.log('游戏状态已重置，候选人数量:', this.currentCandidates.length);
+  }
+};
+
+// 初始化函数
 async function initialize() {
   console.log('Counterstrikle Helper 插件已加载');
-  console.log('当前游戏状态:', gamePhase, '自动模式:', autoPlayEnabled);
   
-  // 初始化变量
-  window.intervalsCleared = false;
-  window.lastBroadcastError = null;
-  
-  // 加载算法模块
   try {
-    // 不再使用new Function()动态评估脚本，改为导入作为模块
+    // 初始化变量
+    window.intervalsCleared = false;
+    window.lastBroadcastError = null;
+    
+    // 加载算法模块
+    await loadAlgorithmModule();
+    
+    // 加载设置和选手数据
+    await loadSettingsAndPlayers();
+    
+    // 设置 WebSocket 拦截
+    setupWebSocketInterception();
+    
+    // 设置消息监听
+    setupMessageListeners();
+    
+    // 初始化游戏状态
+    initializeGameState();
+    
+    // 设置状态广播
+    setupStatusBroadcast();
+    
+  } catch (error) {
+    console.error('初始化失败:', error);
+  }
+}
+
+/**
+ * 加载算法模块
+ */
+async function loadAlgorithmModule() {
+  try {
     const algorithmUrl = chrome.runtime.getURL('algorithm.js');
     
-    // 方法1: 使用动态import加载模块
     try {
-      // 尝试使用动态import
+      // 优先使用动态 import
       const algorithmModule = await import(algorithmUrl);
-      algo = algorithmModule.default || algorithmModule;
-      console.log('成功通过import加载算法模块');
+      GameState.algorithm = algorithmModule.default;
+      console.log('成功通过 import 加载算法模块');
     } catch (importError) {
-      console.error('通过import加载算法模块失败:', importError);
+      console.error('通过 import 加载算法模块失败:', importError);
       
-      // 方法2: 回退方案 - 直接创建script标签
-      return new Promise((resolve, reject) => {
+      // 回退方案 - 使用 script 标签加载
+      await new Promise((resolve, reject) => {
         const script = document.createElement('script');
         script.src = algorithmUrl;
         script.type = 'module';
         script.onload = () => {
           if (window.AlgorithmModule) {
-            algo = window.AlgorithmModule;
-            console.log('成功通过script标签加载算法模块');
+            GameState.algorithm = window.AlgorithmModule;
+            console.log('成功通过 script 标签加载算法模块');
             resolve();
-            continueInitialization(); // 继续初始化流程
           } else {
-            console.error('算法模块加载后未找到算法对象');
-            reject(new Error('算法模块加载后未找到算法对象'));
+            const error = new Error('算法模块加载后未找到算法对象');
+            console.error(error);
+            reject(error);
           }
         };
         script.onerror = (err) => {
-          console.error('通过script标签加载算法模块失败:', err);
+          console.error('通过 script 标签加载算法模块失败:', err);
           reject(err);
         };
         document.head.appendChild(script);
@@ -58,23 +106,25 @@ async function initialize() {
     }
   } catch (error) {
     console.error('加载算法模块失败:', error);
+    throw error;
   }
-  
-  // 继续初始化
-  await continueInitialization();
 }
 
-// 拆分初始化过程，以便在脚本加载后继续
-async function continueInitialization() {
-  // 从存储中加载设置
+/**
+ * 加载设置和选手数据
+ */
+async function loadSettingsAndPlayers() {
   try {
-    const settings = await chrome.storage.local.get(['autoPlay', 'players']);
-    autoPlayEnabled = settings.autoPlay || false;
-    console.log('从存储加载自动模式设置:', autoPlayEnabled);
+    // 从存储中加载设置
+    const settings = await chrome.storage.local.get(['autoPlay', 'players', 'guessInterval']);
+    GameState.autoPlayEnabled = settings.autoPlay || false;
+    GameState.guessInterval = settings.guessInterval || 5000;
+    console.log('从存储加载自动模式设置:', GameState.autoPlayEnabled);
+    console.log('从存储加载猜测间隔:', GameState.guessInterval);
     
     if (settings.players) {
-      allPlayers = settings.players;
-      console.log(`从缓存加载了 ${allPlayers.length} 名选手数据`);
+      GameState.allPlayers = settings.players;
+      console.log(`从缓存加载了 ${GameState.allPlayers.length} 名选手数据`);
     } else {
       // 加载选手数据
       await loadPlayersData();
@@ -84,53 +134,97 @@ async function continueInitialization() {
     // 尝试直接加载选手数据
     await loadPlayersData();
   }
+}
+
+// 加载选手数据
+async function loadPlayersData() {
+  try {
+    const response = await fetch(chrome.runtime.getURL('players.json'));
+    GameState.allPlayers = await response.json();
+    console.log(`成功加载了 ${GameState.allPlayers.length} 名选手数据`);
+    
+    // 缓存到存储中
+    await chrome.storage.local.set({ players: GameState.allPlayers });
+  } catch (error) {
+    console.error('加载选手数据失败:', error);
+  }
+}
+
+/**
+ * 设置 WebSocket 拦截
+ */
+function setupWebSocketInterception() {
+  console.log('开始设置WebSocket监听器...');
   
-  // 覆盖WebSocket
-  overrideWebSocket();
+  // 注入页面脚本
+  injectPageScript();
   
-  // 监听来自插件弹出窗口的消息
+  // 定期检查WebSocket连接状态
+  setInterval(() => {
+    if (!GameState.activeSocket) {
+      console.log('等待WebSocket连接...');
+    }
+  }, 10000);
+  
+  console.log('WebSocket监听器设置完成');
+}
+
+/**
+ * 设置消息监听
+ */
+function setupMessageListeners() {
   try {
     // 移除可能存在的旧监听器，避免重复
     chrome.runtime.onMessage.removeListener(handleMessage);
     // 添加新监听器
     chrome.runtime.onMessage.addListener(handleMessage);
+    console.log('消息监听器设置完成');
   } catch (error) {
     console.error('设置消息监听器失败:', error);
     // 如果是扩展上下文失效，清理资源
     if (error.message && error.message.includes('Extension context invalidated')) {
       clearAllIntervals();
-      return; // 终止初始化
+      return false; // 监听器设置失败
     }
   }
-  
-  // 初始化游戏状态
-  if (!gamePhase) {
-    gamePhase = 'game';
+  return true; // 监听器设置成功
+}
+
+/**
+ * 初始化游戏状态
+ */
+function initializeGameState() {
+  if (!GameState.gamePhase) {
+    GameState.gamePhase = 'game';
     console.log('初始化游戏状态为game');
     
     // 初始化候选列表
-    if (currentCandidates.length === 0) {
-      currentCandidates = [...allPlayers];
-      guessCount = 0;
-      console.log('初始化候选列表，候选人数量:', currentCandidates.length);
+    if (GameState.currentCandidates.length === 0) {
+      GameState.currentCandidates = [...GameState.allPlayers];
+      GameState.guessCount = 0;
+      console.log('初始化候选列表，候选人数量:', GameState.currentCandidates.length);
     } else {
-      console.log('候选列表已存在，跳过初始化，候选人数量:', currentCandidates.length);
+      console.log('候选列表已存在，跳过初始化，候选人数量:', GameState.currentCandidates.length);
     }
     
     // 尝试第一次猜测
     console.log('初始化完成，尝试第一次猜测');
-    setTimeout(() => tryFirstGuess(1000), 2000);
+    setTimeout(() => tryFirstGuess(), 2000);
   } else {
-    console.log('游戏状态已存在:', gamePhase, '跳过初始化');
+    console.log('游戏状态已存在:', GameState.gamePhase, '跳过初始化');
     
     // 即使游戏状态已存在，仍然尝试第一次猜测
-    if (gamePhase === 'game' && guessCount === 0) {
+    if (GameState.gamePhase === 'game' && GameState.guessCount === 0) {
       console.log('游戏已经在进行中，尝试第一次猜测');
-      setTimeout(() => tryFirstGuess(1000), 2000);
+      setTimeout(() => tryFirstGuess(), 2000);
     }
   }
-  
-  // 定期通知弹出窗口状态更新
+}
+
+/**
+ * 设置状态广播
+ */
+function setupStatusBroadcast() {
   try {
     // 确保之前的定时器已被清除
     if (window.statusInterval) {
@@ -139,44 +233,14 @@ async function continueInitialization() {
     // 保存定时器引用
     window.statusInterval = setInterval(broadcastStatus, 1000);
     console.log('已设置状态广播定时器');
+    
+    // 主动广播一次状态
+    setTimeout(broadcastStatus, 500);
   } catch (error) {
     console.error('设置状态广播定时器失败:', error);
+    return false;
   }
-  
-  // 主动广播一次状态
-  setTimeout(broadcastStatus, 500);
-}
-
-// 加载选手数据
-async function loadPlayersData() {
-  try {
-    const response = await fetch(chrome.runtime.getURL('players.json'));
-    allPlayers = await response.json();
-    console.log(`成功加载了 ${allPlayers.length} 名选手数据`);
-    
-    // 缓存到存储中
-    await chrome.storage.local.set({ players: allPlayers });
-  } catch (error) {
-    console.error('加载选手数据失败:', error);
-  }
-}
-
-// 覆盖WebSocket以拦截通信
-function overrideWebSocket() {
-  console.log('开始设置WebSocket监听器...');
-  
-  // 注入页面脚本
-  injectPageScript();
-  
-  // 定期检查WebSocket连接状态
-  setInterval(() => {
-    // 我们不再使用executeScript，而是依赖websocket-interceptor.js发送的状态事件
-    if (!activeSocket) {
-      console.log('等待WebSocket连接...');
-    }
-  }, 10000);
-  
-  console.log('WebSocket监听器设置完成');
+  return true;
 }
 
 // 注入页面脚本
@@ -232,7 +296,7 @@ function injectPageScript() {
     window.addEventListener('webSocketStatus', (e) => {
       console.log('WebSocket状态更新:', e.detail);
       // 如果WebSocket已打开，设置activeSocket为true
-      activeSocket = e.detail && e.detail.active;
+      GameState.activeSocket = e.detail && e.detail.active;
     });
     
     // 监听猜测发送结果事件
@@ -257,16 +321,16 @@ function handleOutgoingWebSocketMessage(socket, data) {
       // 保存猜测的选手ID以便后续处理
       const playerId = message.payload?.playerId;
       if (playerId) {
-        lastGuess = allPlayers.find(p => p.id === playerId);
-        console.log('猜测选手:', lastGuess ? lastGuess.nickname : '未知选手ID: ' + playerId);
+        GameState.lastGuess = GameState.allPlayers.find(p => p.id === playerId);
+        console.log('猜测选手:', GameState.lastGuess ? GameState.lastGuess.nickname : '未知选手ID: ' + playerId);
         
         // 如果找不到选手ID，尝试在日志中输出可用的ID列表
-        if (!lastGuess) {
+        if (!GameState.lastGuess) {
           console.log('可用选手ID列表:');
-          allPlayers.slice(0, 5).forEach(p => {
+          GameState.allPlayers.slice(0, 5).forEach(p => {
             console.log(`- ${p.nickname}: ${p.id}`);
           });
-          console.log(`... 及其他 ${allPlayers.length - 5} 名选手`);
+          console.log(`... 及其他 ${GameState.allPlayers.length - 5} 名选手`);
         }
       } else {
         console.log('猜测消息中没有找到playerID:', message);
@@ -287,14 +351,14 @@ function handleIncomingWebSocketMessage(event) {
     // blast.tv上可能使用不同的消息结构
     if (message.phase) {
       // 原始网站格式
-      gamePhase = message.phase;
-      console.log('检测到游戏阶段:', gamePhase);
-      handleGameStateChange(gamePhase);
+      GameState.gamePhase = message.phase;
+      console.log('检测到游戏阶段:', GameState.gamePhase);
+      handleGameStateChange(GameState.gamePhase);
     } else if (message.type === 'GAME_STATE') {
       // blast.tv可能的格式
-      gamePhase = message.payload?.state || 'game';
-      console.log('检测到blast.tv游戏状态:', gamePhase);
-      handleGameStateChange(gamePhase);
+      GameState.gamePhase = message.payload?.state || 'game';
+      console.log('检测到blast.tv游戏状态:', GameState.gamePhase);
+      handleGameStateChange(GameState.gamePhase);
     } else if (message.type === 'GUESS_RESPONSE' || message.type === 'GUESS_FEEDBACK') {
       // 可能的猜测响应格式
       console.log('收到猜测响应:', message);
@@ -302,7 +366,7 @@ function handleIncomingWebSocketMessage(event) {
     }
     
     // 检查是否有猜测反馈
-    if (gamePhase === 'game' && lastGuess && autoPlayEnabled && algo) {
+    if (GameState.gamePhase === 'game' && GameState.lastGuess && GameState.autoPlayEnabled && GameState.algorithm) {
       const feedback = extractFeedbackFromResponse(message);
       
       if (feedback) {
@@ -317,26 +381,26 @@ function handleIncomingWebSocketMessage(event) {
 
 // 处理游戏状态变化
 function handleGameStateChange(phase) {
-  console.log('游戏状态变更为:', phase, '当前自动模式:', autoPlayEnabled, '当前猜测次数:', guessCount);
+  console.log('游戏状态变更为:', phase, '当前自动模式:', GameState.autoPlayEnabled, '当前猜测次数:', GameState.guessCount);
   
   // 如果游戏刚开始，重置状态
-  if (phase === 'game' && (!currentCandidates || currentCandidates.length === 0)) {
+  if (phase === 'game' && (!GameState.currentCandidates || GameState.currentCandidates.length === 0)) {
     console.log('游戏开始，初始化候选列表');
-    currentCandidates = [...allPlayers];
-    guessCount = 0;
-    console.log('重置后候选人数量:', currentCandidates.length);
+    GameState.currentCandidates = [...GameState.allPlayers];
+    GameState.guessCount = 0;
+    console.log('重置后候选人数量:', GameState.currentCandidates.length);
     
     // 尝试第一次猜测
-    tryFirstGuess(1500);
+    tryFirstGuess();
   } else if (phase === 'results' || phase === 'lobby' || phase === 'end') {
     // 游戏结束，重置状态
     console.log('游戏结束或在大厅中，重置状态');
-    resetGameState();
+    GameState.reset();
   } else if (phase === 'game') {
-    console.log('游戏进行中，当前候选人数量:', currentCandidates ? currentCandidates.length : 0);
+    console.log('游戏进行中，当前候选人数量:', GameState.currentCandidates ? GameState.currentCandidates.length : 0);
     
     // 游戏进行中，尝试第一次猜测
-    tryFirstGuess(1000);
+    tryFirstGuess();
   }
   
   // 广播状态更新
@@ -345,7 +409,7 @@ function handleGameStateChange(phase) {
 
 // 处理猜测响应
 function handleGuessResponse(response) {
-  if (!lastGuess) {
+  if (!GameState.lastGuess) {
     console.log('收到猜测响应，但没有上一次猜测记录');
     return;
   }
@@ -357,7 +421,7 @@ function handleGuessResponse(response) {
     // 提取反馈信息
     if (response.payload) {
       feedback = {
-        playerId: lastGuess.id,
+        playerId: GameState.lastGuess.id,
         isSuccess: response.payload.isCorrect === true,
         feedback: {}
       };
@@ -366,7 +430,7 @@ function handleGuessResponse(response) {
       // 这里需要根据blast.tv的实际响应格式进行调整
       const feedbackData = response.payload.feedback || {};
       
-      for (const attr of algo.ATTRIBUTES_TO_COMPARE) {
+      for (const attr of GameState.algorithm.ATTRIBUTES_TO_COMPARE) {
         if (feedbackData[attr]) {
           feedback.feedback[attr] = feedbackData[attr];
         } else if (attr === 'nationality' && feedbackData.country) {
@@ -406,7 +470,7 @@ function processFeedbackAndGuess(feedback) {
   }
   
   // 将游戏反馈转换为算法可用的格式
-  const internalFeedback = algo.processGameFeedback(feedback, algo.ATTRIBUTES_TO_COMPARE);
+  const internalFeedback = GameState.algorithm.processGameFeedback(feedback, GameState.algorithm.ATTRIBUTES_TO_COMPARE);
   
   if (!internalFeedback) {
     console.error('无法处理反馈');
@@ -416,79 +480,88 @@ function processFeedbackAndGuess(feedback) {
   console.log('处理后的反馈:', internalFeedback);
   
   // 根据反馈过滤候选人
-  currentCandidates = algo.filterCandidates(
-    currentCandidates, 
-    lastGuess, 
+  GameState.currentCandidates = GameState.algorithm.filterCandidates(
+    GameState.currentCandidates, 
+    GameState.lastGuess, 
     internalFeedback, 
-    algo.ATTRIBUTES_TO_COMPARE
+    GameState.algorithm.ATTRIBUTES_TO_COMPARE
   );
   
-  console.log(`根据反馈过滤后剩余候选人: ${currentCandidates.length}`);
+  console.log(`根据反馈过滤后剩余候选人: ${GameState.currentCandidates.length}`);
   
   // 检查是否还有候选人
-  if (currentCandidates.length === 0) {
+  if (GameState.currentCandidates.length === 0) {
     console.error('过滤后没有候选人，算法可能有问题');
     return;
   }
   
-  // 自动进行下一次猜测（延迟一点时间）
-  if (autoPlayEnabled) {
-    setTimeout(() => {
+  // 自动进行下一次猜测（使用自定义间隔时间）
+  if (GameState.autoPlayEnabled) {
+    // 根据间隔决定下一次猜测的方式
+    if (GameState.guessInterval <= 0) {
+      // 间隔为0时立即猜测
+      console.log('间隔为0，立即进行下一次猜测');
       makeNextGuess();
-    }, 1500);
+    } else {
+      // 有间隔时使用setTimeout
+      console.log(`将在 ${GameState.guessInterval}ms 后进行下一次猜测`);
+      setTimeout(() => {
+        makeNextGuess();
+      }, GameState.guessInterval);
+    }
   }
 }
 
 // 进行下一次猜测
 function makeNextGuess() {
   console.log('尝试进行猜测，条件检查:');
-  console.log('- 自动模式:', autoPlayEnabled);
-  console.log('- WebSocket连接:', !!activeSocket);
-  console.log('- 候选人数量:', currentCandidates ? currentCandidates.length : 0);
-  console.log('- 算法模块:', !!algo);
+  console.log('- 自动模式:', GameState.autoPlayEnabled);
+  console.log('- WebSocket连接:', !!GameState.activeSocket);
+  console.log('- 候选人数量:', GameState.currentCandidates ? GameState.currentCandidates.length : 0);
+  console.log('- 算法模块:', !!GameState.algorithm);
   
-  if (!autoPlayEnabled) {
+  if (!GameState.autoPlayEnabled) {
     console.log('自动模式未开启，取消猜测');
     return;
   }
   
-  if (!activeSocket) {
+  if (!GameState.activeSocket) {
     console.log('WebSocket连接不可用，取消猜测');
     return;
   }
   
-  if (!currentCandidates || currentCandidates.length === 0) {
+  if (!GameState.currentCandidates || GameState.currentCandidates.length === 0) {
     console.log('没有可用的候选人，取消猜测');
     return;
   }
   
-  if (!algo) {
+  if (!GameState.algorithm) {
     console.log('算法模块未加载，取消猜测');
     return;
   }
   
   // 找到最佳猜测
   console.log('开始计算最佳猜测...');
-  const bestGuess = algo.findBestGuess(currentCandidates, allPlayers, algo.ATTRIBUTES_TO_COMPARE);
+  const bestGuess = GameState.algorithm.findBestGuess(GameState.currentCandidates, GameState.allPlayers, GameState.algorithm.ATTRIBUTES_TO_COMPARE);
   
   if (!bestGuess) {
     console.error('无法确定最佳猜测');
     return;
   }
   
-  guessCount++;
-  console.log(`第 ${guessCount} 次猜测:`, bestGuess.nickname);
+  GameState.guessCount++;
+  console.log(`第 ${GameState.guessCount} 次猜测:`, bestGuess.nickname);
   
   // 发送猜测
   const guessMessage = {
     type: "GUESS",
     payload: {
       playerId: bestGuess.id,
-      connectionId: connectionId
+      connectionId: GameState.connectionId
     }
   };
   
-  lastGuess = bestGuess;
+  GameState.lastGuess = bestGuess;
   
   // 使用自定义事件发送消息到页面脚本
   try {
@@ -506,9 +579,9 @@ function makeNextGuess() {
 
 // 重置游戏状态
 function resetGameState() {
-  currentCandidates = [];
-  lastGuess = null;
-  guessCount = 0;
+  GameState.currentCandidates = [];
+  GameState.lastGuess = null;
+  GameState.guessCount = 0;
   console.log('游戏状态已重置');
 }
 
@@ -517,24 +590,30 @@ function handleMessage(message, sender, sendResponse) {
   console.log('收到消息:', message);
   
   if (message.action === 'toggleAutoPlay') {
-    const previousAutoPlay = autoPlayEnabled;
-    autoPlayEnabled = message.value;
-    chrome.storage.local.set({ autoPlay: autoPlayEnabled });
-    console.log('自动玩模式切换:', previousAutoPlay, '->', autoPlayEnabled);
+    const previousAutoPlay = GameState.autoPlayEnabled;
+    GameState.autoPlayEnabled = message.value;
+    chrome.storage.local.set({ autoPlay: GameState.autoPlayEnabled });
+    console.log('自动玩模式切换:', previousAutoPlay, '->', GameState.autoPlayEnabled);
     
     // 如果启用了自动模式且游戏正在进行，尝试开始第一次猜测
-    if (autoPlayEnabled && !previousAutoPlay && gamePhase === 'game') {
+    if (GameState.autoPlayEnabled && !previousAutoPlay && GameState.gamePhase === 'game') {
       console.log('自动模式刚刚开启，检查是否可以进行第一次猜测');
-      tryFirstGuess(1000);
+      tryFirstGuess();
     }
+  } else if (message.action === 'setGuessInterval') {
+    const previousInterval = GameState.guessInterval;
+    GameState.guessInterval = message.value;
+    chrome.storage.local.set({ guessInterval: GameState.guessInterval });
+    console.log('猜测间隔已更新:', previousInterval, '->', GameState.guessInterval);
   } else if (message.action === 'getStatus') {
-    console.log('发送状态回复，当前游戏状态:', gamePhase, '自动模式:', autoPlayEnabled);
+    console.log('发送状态回复，当前游戏状态:', GameState.gamePhase, '自动模式:', GameState.autoPlayEnabled);
     sendResponse({
-      autoPlayEnabled: autoPlayEnabled,
-      gamePhase: gamePhase,
-      candidatesCount: currentCandidates ? currentCandidates.length : 0,
-      guessCount: guessCount,
-      connectionActive: !!activeSocket
+      autoPlayEnabled: GameState.autoPlayEnabled,
+      gamePhase: GameState.gamePhase,
+      candidatesCount: GameState.currentCandidates ? GameState.currentCandidates.length : 0,
+      guessCount: GameState.guessCount,
+      connectionActive: !!GameState.activeSocket,
+      guessInterval: GameState.guessInterval
     });
   } else if (message.action === 'startAlgorithmTest') {
     // 开始算法测试
@@ -554,11 +633,11 @@ function broadcastStatus() {
     }
     
     const status = {
-      autoPlayEnabled: autoPlayEnabled,
-      gamePhase: gamePhase,
-      candidatesCount: currentCandidates ? currentCandidates.length : 0,
-      guessCount: guessCount,
-      connectionActive: !!activeSocket
+      autoPlayEnabled: GameState.autoPlayEnabled,
+      gamePhase: GameState.gamePhase,
+      candidatesCount: GameState.currentCandidates ? GameState.currentCandidates.length : 0,
+      guessCount: GameState.guessCount,
+      connectionActive: !!GameState.activeSocket
     };
     
     // 安全地发送消息
@@ -633,7 +712,7 @@ function extractFeedbackFromResponse(wsResponse) {
         };
         
         // 提取各属性的反馈
-        for (const attr of algo.ATTRIBUTES_TO_COMPARE) {
+        for (const attr of GameState.algorithm.ATTRIBUTES_TO_COMPARE) {
           if (attr === 'nationality') {
             feedback.feedback[attr] = lastGuessResponse.nationality;
           } else if (attr === 'age') {
@@ -667,7 +746,7 @@ function extractFeedbackFromResponse(wsResponse) {
       
       // 提取反馈信息
       const feedback = {
-        playerId: lastGuess ? lastGuess.id : guessData.playerId,
+        playerId: GameState.lastGuess ? GameState.lastGuess.id : guessData.playerId,
         isSuccess: guessData.isCorrect === true,
         feedback: {}
       };
@@ -676,7 +755,7 @@ function extractFeedbackFromResponse(wsResponse) {
       const feedbackData = guessData.feedback || {};
       
       // 逐个属性提取反馈
-      for (const attr of algo.ATTRIBUTES_TO_COMPARE) {
+      for (const attr of GameState.algorithm.ATTRIBUTES_TO_COMPARE) {
         if (feedbackData[attr]) {
           feedback.feedback[attr] = feedbackData[attr];
         }
@@ -706,29 +785,49 @@ function extractFeedbackFromResponse(wsResponse) {
 }
 
 // 新增函数：尝试进行第一次猜测
-function tryFirstGuess(delayMs = 1000) {
+function tryFirstGuess(delayMs = null) {
+  // 如果没有指定延迟，使用默认猜测间隔
+  if (delayMs === null) {
+    delayMs = GameState.guessInterval;
+  }
+  
   console.log('尝试进行第一次猜测检查 - 当前条件:');
-  console.log('- 游戏状态:', gamePhase);
-  console.log('- 自动模式:', autoPlayEnabled);
-  console.log('- 已猜测次数:', guessCount);
-  console.log('- 候选人数量:', currentCandidates ? currentCandidates.length : 0);
-  console.log('- WebSocket连接:', !!activeSocket);
-  console.log('- 算法模块:', !!algo);
+  console.log('- 游戏状态:', GameState.gamePhase);
+  console.log('- 自动模式:', GameState.autoPlayEnabled);
+  console.log('- 已猜测次数:', GameState.guessCount);
+  console.log('- 候选人数量:', GameState.currentCandidates ? GameState.currentCandidates.length : 0);
+  console.log('- WebSocket连接:', !!GameState.activeSocket);
+  console.log('- 算法模块:', !!GameState.algorithm);
   
   // 确保所有条件都满足
-  if (gamePhase === 'game' && autoPlayEnabled && guessCount === 0 && 
-      currentCandidates && currentCandidates.length > 0 && 
-      algo && activeSocket) {
-    console.log(`所有条件满足，将在 ${delayMs}ms 后进行第一次猜测`);
-    setTimeout(() => {
-      // 再次检查条件，确保在延迟期间条件没有变化
-      if (gamePhase === 'game' && autoPlayEnabled && guessCount === 0) {
+  if (GameState.gamePhase === 'game' && GameState.autoPlayEnabled && GameState.guessCount === 0 && 
+      GameState.currentCandidates && GameState.currentCandidates.length > 0 && 
+      GameState.algorithm && GameState.activeSocket) {
+    
+    // 根据延迟时间决定如何进行猜测
+    if (delayMs <= 0) {
+      // 延迟为0时立即执行
+      console.log('间隔为0，立即进行第一次猜测');
+      // 立即进行猜测，但仍然进行条件检查
+      if (GameState.gamePhase === 'game' && GameState.autoPlayEnabled && GameState.guessCount === 0) {
         console.log('开始执行第一次猜测');
         makeNextGuess();
       } else {
-        console.log('延迟期间条件已变化，取消第一次猜测');
+        console.log('条件已变化，取消第一次猜测');
       }
-    }, delayMs);
+    } else {
+      // 有延迟时使用setTimeout
+      console.log(`所有条件满足，将在 ${delayMs}ms 后进行第一次猜测`);
+      setTimeout(() => {
+        // 再次检查条件，确保在延迟期间条件没有变化
+        if (GameState.gamePhase === 'game' && GameState.autoPlayEnabled && GameState.guessCount === 0) {
+          console.log('开始执行第一次猜测');
+          makeNextGuess();
+        } else {
+          console.log('延迟期间条件已变化，取消第一次猜测');
+        }
+      }, delayMs);
+    }
     return true;
   } else {
     console.log('不满足第一次猜测条件，跳过');
@@ -738,7 +837,7 @@ function tryFirstGuess(delayMs = 1000) {
 
 // 算法测试功能 - 遍历所有玩家作为目标进行猜测
 async function startAlgorithmTest(options = {}) {
-  if (!algo || !allPlayers || allPlayers.length === 0) {
+  if (!GameState.algorithm || !GameState.allPlayers || GameState.allPlayers.length === 0) {
     console.error('算法或玩家数据未加载，无法进行测试');
     chrome.runtime.sendMessage({
       action: 'algorithmTestComplete',
@@ -757,28 +856,28 @@ async function startAlgorithmTest(options = {}) {
   window.consecutiveGuessCounts = 0;
   console.log('重置猜测历史状态，准备开始测试');
   
-  console.log('开始算法测试，玩家总数:', allPlayers.length);
+  console.log('开始算法测试，玩家总数:', GameState.allPlayers.length);
   
   // 测试配置
   const maxGuesses = options.maxGuesses || 8; // 最大猜测次数
   const testAll = options.testAll || false; // 是否测试所有玩家
   const detailed = options.detailed || false; // 是否生成详细失败报告
-  const testSampleSize = testAll ? allPlayers.length : Math.min(options.sampleSize || 100, allPlayers.length); // 测试样本大小
+  const testSampleSize = testAll ? GameState.allPlayers.length : Math.min(options.sampleSize || 100, GameState.allPlayers.length); // 测试样本大小
   const useFixedSample = options.useFixedSample || false; // 是否使用固定测试集
   
   // 选择测试样本
   let samplePlayers;
   if (testAll) {
     // 测试所有玩家
-    samplePlayers = [...allPlayers];
-    console.log(`将对所有 ${allPlayers.length} 名玩家进行测试`);
+    samplePlayers = [...GameState.allPlayers];
+    console.log(`将对所有 ${GameState.allPlayers.length} 名玩家进行测试`);
   } else if (useFixedSample) {
     // 使用固定测试集 - 例如按照ID或昵称排序后的前N个
-    samplePlayers = [...allPlayers].sort((a, b) => a.nickname.localeCompare(b.nickname)).slice(0, testSampleSize);
+    samplePlayers = [...GameState.allPlayers].sort((a, b) => a.nickname.localeCompare(b.nickname)).slice(0, testSampleSize);
     console.log(`将对 ${testSampleSize} 名固定排序玩家进行测试（按昵称排序）`);
   } else {
     // 随机选择测试样本
-    samplePlayers = getRandomSample(allPlayers, testSampleSize);
+    samplePlayers = getRandomSample(GameState.allPlayers, testSampleSize);
     console.log(`将对 ${testSampleSize} 名随机玩家进行测试`);
   }
   
@@ -797,7 +896,7 @@ async function startAlgorithmTest(options = {}) {
     window.consecutiveGuessCounts = 0;
     
     // 重置测试环境
-    let testCandidates = [...allPlayers];
+    let testCandidates = [...GameState.allPlayers];
     let guessCountForTest = 0;
     let success = false;
     let guessHistory = []; // 添加猜测历史记录
@@ -805,7 +904,7 @@ async function startAlgorithmTest(options = {}) {
     // 进行猜测直到成功或达到最大次数
     while (guessCountForTest < maxGuesses && testCandidates.length > 0) {
       // 找到最佳猜测
-      const guess = algo.findBestGuess(testCandidates, allPlayers, algo.ATTRIBUTES_TO_COMPARE);
+      const guess = GameState.algorithm.findBestGuess(testCandidates, GameState.allPlayers, GameState.algorithm.ATTRIBUTES_TO_COMPARE);
       guessCountForTest++;
       
       // 增强调试信息
@@ -843,9 +942,9 @@ async function startAlgorithmTest(options = {}) {
       }
       
       // 根据反馈过滤候选人
-      const processedFeedback = algo.processGameFeedback({feedback}, algo.ATTRIBUTES_TO_COMPARE);
+      const processedFeedback = GameState.algorithm.processGameFeedback({feedback}, GameState.algorithm.ATTRIBUTES_TO_COMPARE);
       const previousCount = testCandidates.length;
-      testCandidates = algo.filterCandidates(testCandidates, guess, processedFeedback, algo.ATTRIBUTES_TO_COMPARE);
+      testCandidates = GameState.algorithm.filterCandidates(testCandidates, guess, processedFeedback, GameState.algorithm.ATTRIBUTES_TO_COMPARE);
       
       // 记录过滤后的候选人数量
       if (detailed && guessHistory.length > 0) {
@@ -939,7 +1038,7 @@ function simulateFeedback(guessPlayer, targetPlayer) {
   const feedback = {};
   
   // 遍历每个属性进行比较
-  for (const attr of algo.ATTRIBUTES_TO_COMPARE) {
+  for (const attr of GameState.algorithm.ATTRIBUTES_TO_COMPARE) {
     if (attr === 'nationality') {
       // 国籍比较
       if (guessPlayer.nationality === targetPlayer.nationality) {
