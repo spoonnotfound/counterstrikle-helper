@@ -21,9 +21,16 @@ const GameState = {
   
   // 算法模块引用
   algorithm: null,
+  neuralAlgorithm: null,
+  
+  // 算法设置
+  algorithmType: 'entropy', // 默认使用信息熵算法
+  
+  // 神经网络状态
+  guessHistory: [], // 存储猜测历史用于训练
   
   // 猜测设置
-  guessInterval: 5000, // 默认1.5秒
+  guessInterval: 5000, // 默认5秒
   
   // 重置游戏
   reset() {
@@ -44,10 +51,19 @@ async function initialize() {
     window.lastBroadcastError = null;
     
     // 加载算法模块
-    await loadAlgorithmModule();
+    await loadAlgorithmModules();
     
     // 加载设置和选手数据
     await loadSettingsAndPlayers();
+    
+    // 预加载TensorFlow.js到页面环境
+    try {
+      await loadTensorFlowIntoPage();
+      console.log('TensorFlow.js预加载成功');
+    } catch (err) {
+      // 错误处理，但不影响主要功能
+      console.warn('TensorFlow.js预加载失败，但这不会影响基本功能:', err.message);
+    }
     
     // 设置 WebSocket 拦截
     setupWebSocketInterception();
@@ -69,7 +85,28 @@ async function initialize() {
 /**
  * 加载算法模块
  */
-async function loadAlgorithmModule() {
+async function loadAlgorithmModules() {
+  try {
+    // 加载常规算法模块
+    await loadEntropyAlgorithm();
+    
+    // 加载神经网络算法模块
+    await loadNeuralAlgorithm();
+    
+    // 根据设置选择当前使用的算法
+    await selectCurrentAlgorithm();
+    
+    console.log('所有算法模块加载完成');
+  } catch (error) {
+    console.error('加载算法模块失败:', error);
+    throw error;
+  }
+}
+
+/**
+ * 加载信息熵算法模块
+ */
+async function loadEntropyAlgorithm() {
   try {
     const algorithmUrl = chrome.runtime.getURL('algorithm.js');
     
@@ -77,9 +114,9 @@ async function loadAlgorithmModule() {
       // 优先使用动态 import
       const algorithmModule = await import(algorithmUrl);
       GameState.algorithm = algorithmModule.default;
-      console.log('成功通过 import 加载算法模块');
+      console.log('成功通过 import 加载信息熵算法模块');
     } catch (importError) {
-      console.error('通过 import 加载算法模块失败:', importError);
+      console.error('通过 import 加载信息熵算法模块失败:', importError);
       
       // 回退方案 - 使用 script 标签加载
       await new Promise((resolve, reject) => {
@@ -89,25 +126,97 @@ async function loadAlgorithmModule() {
         script.onload = () => {
           if (window.AlgorithmModule) {
             GameState.algorithm = window.AlgorithmModule;
-            console.log('成功通过 script 标签加载算法模块');
+            console.log('成功通过 script 标签加载信息熵算法模块');
             resolve();
           } else {
-            const error = new Error('算法模块加载后未找到算法对象');
+            const error = new Error('信息熵算法模块加载后未找到算法对象');
             console.error(error);
             reject(error);
           }
         };
         script.onerror = (err) => {
-          console.error('通过 script 标签加载算法模块失败:', err);
+          console.error('通过 script 标签加载信息熵算法模块失败:', err);
           reject(err);
         };
         document.head.appendChild(script);
       });
     }
   } catch (error) {
-    console.error('加载算法模块失败:', error);
+    console.error('加载信息熵算法模块失败:', error);
     throw error;
   }
+}
+
+/**
+ * 加载神经网络算法模块
+ */
+async function loadNeuralAlgorithm() {
+  try {
+    const neuralAlgorithmUrl = chrome.runtime.getURL('neural-algorithm.js');
+    
+    try {
+      // 优先使用动态 import
+      const neuralModule = await import(neuralAlgorithmUrl);
+      GameState.neuralAlgorithm = neuralModule.default;
+      console.log('成功通过 import 加载神经网络算法模块');
+    } catch (importError) {
+      console.error('通过 import 加载神经网络算法模块失败:', importError);
+      
+      // 回退方案 - 使用 script 标签加载
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = neuralAlgorithmUrl;
+        script.type = 'module';
+        script.onload = () => {
+          if (window.NeuralAlgorithmModule) {
+            GameState.neuralAlgorithm = window.NeuralAlgorithmModule;
+            console.log('成功通过 script 标签加载神经网络算法模块');
+            resolve();
+          } else {
+            const error = new Error('神经网络算法模块加载后未找到算法对象');
+            console.error(error);
+            reject(error);
+          }
+        };
+        script.onerror = (err) => {
+          console.error('通过 script 标签加载神经网络算法模块失败:', err);
+          reject(err);
+        };
+        document.head.appendChild(script);
+      });
+    }
+  } catch (error) {
+    console.error('加载神经网络算法模块失败:', error);
+    // 神经网络算法是可选的，加载失败不抛出异常
+  }
+}
+
+/**
+ * 根据设置选择当前使用的算法
+ */
+async function selectCurrentAlgorithm() {
+  // 获取存储的算法类型
+  try {
+    const settings = await chrome.storage.local.get(['algorithmType']);
+    if (settings.algorithmType) {
+      GameState.algorithmType = settings.algorithmType;
+    }
+    
+    console.log('当前选择的算法类型:', GameState.algorithmType);
+  } catch (error) {
+    console.error('加载算法类型设置失败:', error);
+  }
+}
+
+/**
+ * 获取当前使用的算法实例
+ * @returns {Object} - 当前算法实例
+ */
+function getCurrentAlgorithm() {
+  if (GameState.algorithmType === 'neural' && GameState.neuralAlgorithm) {
+    return GameState.neuralAlgorithm;
+  }
+  return GameState.algorithm;
 }
 
 /**
@@ -116,11 +225,16 @@ async function loadAlgorithmModule() {
 async function loadSettingsAndPlayers() {
   try {
     // 从存储中加载设置
-    const settings = await chrome.storage.local.get(['autoPlay', 'players', 'guessInterval']);
+    const settings = await chrome.storage.local.get(['autoPlay', 'players', 'guessInterval', 'algorithmType', 'guessHistory']);
     GameState.autoPlayEnabled = settings.autoPlay || false;
     GameState.guessInterval = settings.guessInterval || 5000;
+    GameState.algorithmType = settings.algorithmType || 'entropy';
+    GameState.guessHistory = settings.guessHistory || [];
+    
     console.log('从存储加载自动模式设置:', GameState.autoPlayEnabled);
     console.log('从存储加载猜测间隔:', GameState.guessInterval);
+    console.log('从存储加载算法类型:', GameState.algorithmType);
+    console.log('从存储加载猜测历史数量:', GameState.guessHistory.length);
     
     if (settings.players) {
       GameState.allPlayers = settings.players;
@@ -605,6 +719,11 @@ function handleMessage(message, sender, sendResponse) {
     GameState.guessInterval = message.value;
     chrome.storage.local.set({ guessInterval: GameState.guessInterval });
     console.log('猜测间隔已更新:', previousInterval, '->', GameState.guessInterval);
+  } else if (message.action === 'setAlgorithmType') {
+    const previousType = GameState.algorithmType;
+    GameState.algorithmType = message.value;
+    chrome.storage.local.set({ algorithmType: GameState.algorithmType });
+    console.log('算法类型已更新:', previousType, '->', GameState.algorithmType);
   } else if (message.action === 'getStatus') {
     console.log('发送状态回复，当前游戏状态:', GameState.gamePhase, '自动模式:', GameState.autoPlayEnabled);
     sendResponse({
@@ -613,12 +732,34 @@ function handleMessage(message, sender, sendResponse) {
       candidatesCount: GameState.currentCandidates ? GameState.currentCandidates.length : 0,
       guessCount: GameState.guessCount,
       connectionActive: !!GameState.activeSocket,
-      guessInterval: GameState.guessInterval
+      guessInterval: GameState.guessInterval,
+      algorithmType: GameState.algorithmType
     });
   } else if (message.action === 'startAlgorithmTest') {
     // 开始算法测试
     console.log('收到算法测试命令', message.options || {});
     startAlgorithmTest(message.options || {});
+  } else if (message.action === 'getPlayerCount') {
+    // 发送选手数量
+    chrome.runtime.sendMessage({
+      action: 'playerCountUpdate',
+      count: GameState.allPlayers.length
+    });
+  } else if (message.action === 'getNeuralStatus') {
+    // 获取神经网络状态
+    const neuralStatus = {
+      isModelTrained: GameState.neuralAlgorithm ? GameState.neuralAlgorithm.isModelTrained : false,
+      isTraining: GameState.neuralAlgorithm ? GameState.neuralAlgorithm.isTraining : false,
+      historyCount: GameState.guessHistory.length
+    };
+    
+    chrome.runtime.sendMessage({
+      action: 'neuralStatusUpdate',
+      status: neuralStatus
+    });
+  } else if (message.action === 'trainNeuralModel') {
+    // 训练神经网络模型
+    trainNeuralModel();
   }
 }
 
@@ -637,7 +778,9 @@ function broadcastStatus() {
       gamePhase: GameState.gamePhase,
       candidatesCount: GameState.currentCandidates ? GameState.currentCandidates.length : 0,
       guessCount: GameState.guessCount,
-      connectionActive: !!GameState.activeSocket
+      connectionActive: !!GameState.activeSocket,
+      guessInterval: GameState.guessInterval,
+      algorithmType: GameState.algorithmType
     };
     
     // 安全地发送消息
@@ -1105,6 +1248,751 @@ function simulateFeedback(guessPlayer, targetPlayer) {
 function getRandomSample(array, size) {
   const shuffled = [...array].sort(() => 0.5 - Math.random());
   return shuffled.slice(0, size);
+}
+
+// 检查神经网络算法是否准备好
+async function isNeuralNetworkReady() {
+  try {
+    // 检查神经网络算法模块是否已加载
+    if (!GameState.neuralAlgorithm) {
+      console.log('神经网络算法模块未加载');
+      return false;
+    }
+    
+    // 检查TensorFlow.js是否已加载到页面环境中
+    let tfLoaded = false;
+    try {
+      tfLoaded = await isTensorFlowLoaded();
+      console.log('TensorFlow.js加载状态检查结果:', tfLoaded);
+    } catch (error) {
+      console.warn('检查TensorFlow.js加载状态失败:', error.message);
+      // 继续检查，不直接返回失败
+    }
+    
+    // 如果TensorFlow未加载，尝试再次加载
+    if (!tfLoaded) {
+      console.log('TensorFlow.js未加载，尝试加载...');
+      try {
+        // 尝试加载TensorFlow
+        await loadTensorFlowIntoPage();
+        console.log('TensorFlow.js加载成功');
+        // 加载成功后稍等一会儿让TensorFlow初始化
+        await new Promise(resolve => setTimeout(resolve, 500));
+        tfLoaded = true;
+      } catch (loadError) {
+        console.error('加载TensorFlow.js失败:', loadError.message);
+        tfLoaded = false;
+      }
+    }
+    
+    // 如果还是无法加载TensorFlow，则神经网络不可用
+    if (!tfLoaded) {
+      console.log('TensorFlow.js无法加载，神经网络不可用');
+      return false;
+    }
+    
+    // 创建一个Promise来检查神经网络状态
+    const checkNeuralStatus = () => {
+      return new Promise((resolve, reject) => {
+        // 设置超时
+        const timeout = setTimeout(() => {
+          reject(new Error('检查神经网络状态超时'));
+        }, 5000);
+        
+        window.addEventListener('neural_network_status', (event) => {
+          clearTimeout(timeout);
+          resolve(event.detail);
+        }, { once: true });
+        
+        // 创建并插入神经网络检查脚本
+        const script = document.createElement('script');
+        script.src = chrome.runtime.getURL('neural-checker.js');
+        
+        // 给神经网络检查脚本添加数据属性，传递tf-status-checker.js的URL
+        script.dataset.tfStatusCheckerUrl = chrome.runtime.getURL('tf-status-checker.js');
+        
+        script.onload = function() {
+          // 脚本加载后，将其移除
+          this.remove();
+        };
+        script.onerror = function(err) {
+          clearTimeout(timeout);
+          reject(new Error('加载神经网络检查脚本失败'));
+        };
+        document.head.appendChild(script);
+      });
+    };
+    
+    // 尝试检查神经网络状态
+    let neuralStatus;
+    try {
+      neuralStatus = await checkNeuralStatus();
+      console.log('神经网络状态详情:', neuralStatus);
+    } catch (error) {
+      console.error('检查神经网络状态时出错:', error.message);
+      
+      // 尝试直接在页面中初始化神经网络
+      if (tfLoaded) {
+        console.log('尝试备用方案：直接在页面中初始化神经网络');
+        try {
+          // 先将GameState暴露给页面环境
+          await exposeGameStateToPage();
+          
+          // 使用外部初始化脚本
+          const initResult = await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              window.removeEventListener('direct_neural_init_complete', onDirectInit);
+              reject(new Error('直接初始化神经网络超时'));
+            }, 10000);
+            
+            function onDirectInit(event) {
+              clearTimeout(timeout);
+              window.removeEventListener('direct_neural_init_complete', onDirectInit);
+              resolve(event.detail);
+            }
+            
+            window.addEventListener('direct_neural_init_complete', onDirectInit);
+            
+            // 加载直接初始化脚本
+            const script = document.createElement('script');
+            script.src = chrome.runtime.getURL('direct-neural-initializer.js');
+            script.onload = function() {
+              console.log('神经网络直接初始化脚本已加载');
+              this.remove();
+            };
+            script.onerror = function(err) {
+              clearTimeout(timeout);
+              window.removeEventListener('direct_neural_init_complete', onDirectInit);
+              reject(new Error('加载神经网络直接初始化脚本失败'));
+              this.remove();
+            };
+            
+            document.head.appendChild(script);
+          });
+          
+          console.log('直接初始化结果:', initResult);
+          
+          if (initResult.success) {
+            // 如果初始化成功，返回true
+            return true;
+          }
+        } catch (initError) {
+          console.error('直接初始化神经网络失败:', initError);
+        }
+      }
+      
+      return false;
+    }
+    
+    // 如果神经网络不可用，尝试再次初始化
+    if (!neuralStatus.available && tfLoaded) {
+      console.log('神经网络不可用但TensorFlow已加载，尝试重新初始化...');
+      
+      try {
+        // 使用外部重新初始化脚本
+        const reinitPromise = new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            window.removeEventListener('neural_reinit_complete', onReinitComplete);
+            reject(new Error('重新初始化神经网络超时'));
+          }, 10000);
+          
+          function onReinitComplete(event) {
+            clearTimeout(timeout);
+            window.removeEventListener('neural_reinit_complete', onReinitComplete);
+            
+            if (event.detail && event.detail.success) {
+              resolve(event.detail);
+            } else {
+              reject(new Error(event.detail.error || '重新初始化失败'));
+            }
+          }
+          
+          window.addEventListener('neural_reinit_complete', onReinitComplete);
+          
+          // 先将GameState暴露给页面环境
+          exposeGameStateToPage().then(() => {
+            // 加载重新初始化脚本
+            const script = document.createElement('script');
+            script.src = chrome.runtime.getURL('neural-reinitializer.js');
+            script.onload = function() {
+              console.log('神经网络重新初始化脚本已加载');
+              this.remove();
+            };
+            script.onerror = function(err) {
+              clearTimeout(timeout);
+              window.removeEventListener('neural_reinit_complete', onReinitComplete);
+              reject(new Error('加载神经网络重新初始化脚本失败'));
+              this.remove();
+            };
+            
+            document.head.appendChild(script);
+          });
+        });
+        
+        const reinitResult = await reinitPromise;
+        console.log('重新初始化结果:', reinitResult);
+        
+        if (reinitResult.success) {
+          // 再次检查神经网络状态
+          try {
+            neuralStatus = await checkNeuralStatus();
+            console.log('重新初始化后的神经网络状态:', neuralStatus);
+          } catch (rechecktError) {
+            console.error('重新检查神经网络状态时出错:', rechecktError);
+            return reinitResult.success; // 使用重新初始化结果
+          }
+        }
+      } catch (reinitError) {
+        console.error('重新初始化神经网络失败:', reinitError);
+      }
+    }
+    
+    return neuralStatus.available;
+  } catch (error) {
+    console.error('检查神经网络状态时出错:', error);
+    return false;
+  }
+}
+
+// 在页面环境中加载TensorFlow.js库
+function loadTensorFlowIntoPage() {
+  return new Promise(async (resolve, reject) => {
+    try {
+      console.log('在页面环境中加载TensorFlow.js...');
+      
+      // 先检查是否已经加载
+      let isLoaded = false;
+      try {
+        isLoaded = await isTensorFlowLoaded();
+      } catch (checkError) {
+        console.warn('检查TensorFlow.js状态失败:', checkError.message);
+        // 继续尝试加载，而不是直接失败
+      }
+      
+      if (isLoaded) {
+        console.log('TensorFlow.js已经加载到页面环境中');
+        return resolve();
+      }
+      
+      // 获取TensorFlow.js的完整URL
+      const tensorflowUrl = chrome.runtime.getURL('tensorflow.min.js');
+      console.log('TensorFlow.js URL:', tensorflowUrl);
+      
+      // 使用三种不同的方法尝试加载TensorFlow，提高成功率
+      // 方法1：使用direct-tf-loader.js (带URL参数的方式)
+      console.log('尝试方法1: 使用直接加载器...');
+      
+      // 设置事件监听
+      const directLoadListener = function(event) {
+        window.removeEventListener('tensorflowDirectLoaded', directLoadListener);
+        
+        if (event.detail.success) {
+          console.log('方法1成功：TensorFlow.js直接加载成功，版本:', event.detail.version);
+          resolve();
+          return true;
+        } else {
+          console.warn('方法1失败：直接加载TensorFlow.js失败:', event.detail.error);
+          return false;
+        }
+      };
+      
+      window.addEventListener('tensorflowDirectLoaded', directLoadListener);
+      
+      // 注入直接加载器脚本 (带URL参数)
+      const loaderUrl = chrome.runtime.getURL('direct-tf-loader.js') + `?tfUrl=${encodeURIComponent(tensorflowUrl)}`;
+      const directScript = document.createElement('script');
+      directScript.src = loaderUrl;
+      directScript.async = false;
+      
+      // 设置20秒超时
+      const loadTimeout = setTimeout(() => {
+        window.removeEventListener('tensorflowDirectLoaded', directLoadListener);
+        
+        // 尝试方法2 (tf-loader.js方式)
+        console.log('方法1超时，尝试方法2: 使用tf-loader.js...');
+        tryLoadWithTfLoader(tensorflowUrl).then(resolve).catch(error => {
+          console.warn('方法2失败:', error);
+          
+          // 尝试方法3 (内联脚本方式)
+          console.log('尝试方法3: 直接内联脚本...');
+          tryInlineLoader(tensorflowUrl).then(resolve).catch(finalError => {
+            console.error('所有加载方法都失败:', finalError);
+            reject(new Error('无法加载TensorFlow.js: 所有尝试都失败'));
+          });
+        });
+      }, 20000);
+      
+      directScript.onload = function() {
+        console.log('直接加载器脚本已加载');
+        // 移除脚本但保持事件监听
+        this.remove();
+      };
+      
+      directScript.onerror = function(err) {
+        clearTimeout(loadTimeout);
+        window.removeEventListener('tensorflowDirectLoaded', directLoadListener);
+        console.warn('加载直接加载器脚本失败，尝试备用方法');
+        
+        // 尝试备用方法
+        tryLoadWithTfLoader(tensorflowUrl).then(resolve).catch(error => {
+          console.warn('备用方法失败:', error);
+          reject(new Error(`无法加载TensorFlow.js: ${error.message}`));
+        });
+        
+        this.remove();
+      };
+      
+      document.head.appendChild(directScript);
+      
+    } catch (error) {
+      console.error('加载TensorFlow.js时出错:', error);
+      reject(error);
+    }
+  });
+}
+
+// 使用tf-loader.js尝试加载TensorFlow
+function tryLoadWithTfLoader(tensorflowUrl) {
+  return new Promise((resolve, reject) => {
+    try {
+      // 注入URL设置脚本
+      const urlScript = document.createElement('script');
+      urlScript.textContent = `window.tensorflowJsUrl = "${tensorflowUrl}";`;
+      document.head.appendChild(urlScript);
+      setTimeout(() => urlScript.remove(), 100);
+      
+      // 设置事件监听
+      const loadListener = function(event) {
+        window.removeEventListener('tensorflowLoaded', loadListener);
+        
+        if (event.detail.success) {
+          console.log('TensorFlow.js通过tf-loader.js加载成功');
+          resolve();
+        } else {
+          reject(new Error(`通过tf-loader.js加载失败: ${event.detail.error}`));
+        }
+      };
+      
+      window.addEventListener('tensorflowLoaded', loadListener);
+      
+      // 设置超时
+      const timeout = setTimeout(() => {
+        window.removeEventListener('tensorflowLoaded', loadListener);
+        reject(new Error('通过tf-loader.js加载超时'));
+      }, 15000);
+      
+      // 注入tf-loader.js
+      const script = document.createElement('script');
+      script.src = chrome.runtime.getURL('tf-loader.js');
+      script.async = false;
+      
+      script.onload = function() {
+        console.log('tf-loader.js脚本已加载');
+        this.remove();
+      };
+      
+      script.onerror = function() {
+        clearTimeout(timeout);
+        window.removeEventListener('tensorflowLoaded', loadListener);
+        reject(new Error('加载tf-loader.js脚本失败'));
+        this.remove();
+      };
+      
+      document.head.appendChild(script);
+      
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+// 直接内联加载TensorFlow (方法3)
+function tryInlineLoader(tensorflowUrl) {
+  return new Promise((resolve, reject) => {
+    try {
+      // 创建内联脚本
+      const inlineScript = document.createElement('script');
+      inlineScript.textContent = `
+        (function() {
+          console.log('内联方法加载TensorFlow.js...');
+          
+          // 直接加载TensorFlow.js
+          const script = document.createElement('script');
+          script.src = "${tensorflowUrl}";
+          script.async = false;
+          
+          script.onload = function() {
+            if (typeof tf !== 'undefined') {
+              console.log('内联方法成功加载TensorFlow.js!');
+              window.tf = tf;
+              window.dispatchEvent(new CustomEvent('tensorflowInlineLoaded', { 
+                detail: { success: true } 
+              }));
+            } else {
+              console.error('内联方法加载TensorFlow.js后tf对象未定义');
+              window.dispatchEvent(new CustomEvent('tensorflowInlineLoaded', { 
+                detail: { success: false, error: 'tf对象未定义' } 
+              }));
+            }
+          };
+          
+          script.onerror = function() {
+            console.error('内联方法加载TensorFlow.js失败');
+            window.dispatchEvent(new CustomEvent('tensorflowInlineLoaded', { 
+              detail: { success: false, error: '加载失败' } 
+            }));
+          };
+          
+          document.head.appendChild(script);
+        })();
+      `;
+      
+      // 设置事件监听
+      const inlineListener = function(event) {
+        window.removeEventListener('tensorflowInlineLoaded', inlineListener);
+        
+        if (event.detail.success) {
+          console.log('内联方法成功加载TensorFlow.js');
+          resolve();
+        } else {
+          reject(new Error(`内联方法加载失败: ${event.detail.error || '未知错误'}`));
+        }
+      };
+      
+      window.addEventListener('tensorflowInlineLoaded', inlineListener);
+      
+      // 设置超时
+      const timeout = setTimeout(() => {
+        window.removeEventListener('tensorflowInlineLoaded', inlineListener);
+        reject(new Error('内联方法加载超时'));
+      }, 15000);
+      
+      document.head.appendChild(inlineScript);
+      
+      // 稍后移除脚本
+      setTimeout(() => {
+        inlineScript.remove();
+      }, 500);
+      
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+// 将GameState对象暴露给页面环境
+function exposeGameStateToPage() {
+  return new Promise((resolve, reject) => {
+    try {
+      console.log('将GameState对象暴露给页面环境...');
+      
+      // 创建一个脚本元素，将GameState对象传递给页面
+      const script = document.createElement('script');
+      script.textContent = `
+        // 在页面环境中创建GameState对象
+        if (typeof window.GameState === 'undefined') {
+          window.GameState = {};
+        }
+        window.GameState.exposed = true;
+        window.dispatchEvent(new CustomEvent('gamestate_exposed', {
+          detail: { success: true }
+        }));
+      `;
+      
+      // 监听事件
+      const listener = function(event) {
+        window.removeEventListener('gamestate_exposed', listener);
+        if (event.detail && event.detail.success) {
+          console.log('GameState对象已成功暴露到页面环境');
+          resolve();
+        } else {
+          reject(new Error('暴露GameState对象失败'));
+        }
+      };
+      
+      window.addEventListener('gamestate_exposed', listener, { once: true });
+      
+      // 添加脚本
+      document.head.appendChild(script);
+      setTimeout(() => script.remove(), 100);
+      
+      // 如果需要，将算法模块也暴露出去
+      if (GameState.neuralAlgorithm) {
+        const moduleScript = document.createElement('script');
+        moduleScript.textContent = `
+          window.GameState.neuralAlgorithm = ${JSON.stringify(GameState.neuralAlgorithm, (key, value) => {
+            // 排除函数和循环引用
+            if (typeof value === 'function') {
+              return undefined;
+            }
+            return value;
+          })};
+        `;
+        document.head.appendChild(moduleScript);
+        setTimeout(() => moduleScript.remove(), 100);
+      }
+    } catch (error) {
+      console.error('暴露GameState对象时出错:', error);
+      reject(error);
+    }
+  });
+}
+
+// 训练神经网络模型
+async function trainNeuralModel() {
+  console.log('开始训练神经网络模型流程...');
+  
+  if (!GameState.neuralAlgorithm) {
+    console.error('神经网络算法模块未加载，无法训练模型');
+    
+    chrome.runtime.sendMessage({
+      action: 'neuralTrainingComplete',
+      success: false,
+      error: '神经网络算法模块未加载'
+    });
+    
+    return;
+  }
+  
+  try {
+    console.log('准备加载TensorFlow.js...');
+    
+    // 确保TensorFlow.js先加载到页面环境中
+    try {
+      await loadTensorFlowIntoPage();
+      console.log('TensorFlow.js成功加载到页面环境');
+    } catch (tfError) {
+      console.error('TensorFlow.js加载失败:', tfError);
+      throw new Error(`TensorFlow.js加载失败: ${tfError.message}`);
+    }
+    
+    // 验证TensorFlow.js是否工作正常 - 使用外部脚本
+    try {
+      console.log('验证TensorFlow.js是否工作正常...');
+      
+      // 创建事件监听
+      const validationPromise = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          window.removeEventListener('tf_validation_complete', onValidationComplete);
+          reject(new Error('验证TensorFlow.js超时'));
+        }, 8000); // 增加超时时间
+        
+        function onValidationComplete(event) {
+          clearTimeout(timeout);
+          window.removeEventListener('tf_validation_complete', onValidationComplete);
+          
+          if (event.detail && event.detail.success) {
+            resolve(event.detail);
+          } else {
+            reject(new Error(event.detail.error || '验证失败'));
+          }
+        }
+        
+        window.addEventListener('tf_validation_complete', onValidationComplete);
+        
+        // 加载验证脚本
+        const script = document.createElement('script');
+        script.src = chrome.runtime.getURL('tf-validator.js');
+        script.onload = function() {
+          console.log('TensorFlow验证脚本已加载');
+          this.remove();
+        };
+        script.onerror = function(err) {
+          clearTimeout(timeout);
+          window.removeEventListener('tf_validation_complete', onValidationComplete);
+          reject(new Error('加载TensorFlow验证脚本失败'));
+          this.remove();
+        };
+        
+        document.head.appendChild(script);
+      });
+      
+      const validationResult = await validationPromise;
+      console.log('TensorFlow.js验证成功，版本:', validationResult.version);
+      
+    } catch (validationError) {
+      console.error('TensorFlow.js验证失败:', validationError);
+      throw new Error(`TensorFlow.js验证失败: ${validationError.message}`);
+    }
+    
+    // 等待确认神经网络算法准备就绪 - 使用之前修改后的方法，它现在使用外部脚本
+    console.log('检查神经网络是否准备就绪...');
+    let neuralReady = false;
+    try {
+      neuralReady = await isNeuralNetworkReady();
+      console.log('神经网络准备状态:', neuralReady);
+    } catch (checkError) {
+      console.error('检查神经网络状态失败:', checkError);
+      throw new Error(`检查神经网络状态失败: ${checkError.message}`);
+    }
+    
+    if (!neuralReady) {
+      // 使用外部脚本初始化神经网络
+      console.log('神经网络未准备就绪，尝试通过外部脚本初始化...');
+      
+      try {
+        // 先将GameState暴露给页面环境
+        await exposeGameStateToPage();
+        
+        // 加载外部初始化脚本
+        const initPromise = new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            window.removeEventListener('neural_manual_init_complete', onInitComplete);
+            reject(new Error('初始化神经网络超时'));
+          }, 10000);
+          
+          function onInitComplete(event) {
+            clearTimeout(timeout);
+            window.removeEventListener('neural_manual_init_complete', onInitComplete);
+            
+            if (event.detail && event.detail.success) {
+              resolve(event.detail);
+            } else {
+              reject(new Error(event.detail.error || '初始化失败'));
+            }
+          }
+          
+          window.addEventListener('neural_manual_init_complete', onInitComplete);
+          
+          // 加载初始化脚本
+          const script = document.createElement('script');
+          script.src = chrome.runtime.getURL('neural-initializer.js');
+          script.onload = function() {
+            console.log('神经网络初始化脚本已加载');
+            this.remove();
+          };
+          script.onerror = function(err) {
+            clearTimeout(timeout);
+            window.removeEventListener('neural_manual_init_complete', onInitComplete);
+            reject(new Error('加载神经网络初始化脚本失败'));
+            this.remove();
+          };
+          
+          document.head.appendChild(script);
+        });
+        
+        const initResult = await initPromise;
+        console.log('神经网络手动初始化结果:', initResult);
+        
+        if (!initResult.success) {
+          throw new Error(`手动初始化神经网络失败: ${initResult.error || '未知错误'}`);
+        }
+        
+        // 成功手动初始化
+        neuralReady = true;
+      } catch (manualInitError) {
+        console.error('尝试手动初始化失败:', manualInitError);
+        throw new Error('神经网络算法未准备就绪，通过外部脚本初始化也失败');
+      }
+    }
+    
+    // 检查是否有足够的训练数据
+    if (!GameState.guessHistory || GameState.guessHistory.length < 10) {
+      console.warn('训练数据不足，需要至少10条记录，当前:', GameState.guessHistory.length);
+      
+      // 创建测试数据进行训练
+      console.log('使用算法测试生成训练数据...');
+      await generateTrainingData();
+    }
+    
+    console.log(`开始训练神经网络模型，使用 ${GameState.guessHistory.length} 条历史记录`);
+    
+    // 等待一会儿确保TensorFlow.js完全初始化
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // 开始训练
+    console.log('调用神经网络训练方法...');
+    try {
+      await GameState.neuralAlgorithm.trainModel(GameState.guessHistory, GameState.allPlayers);
+      
+      // 训练完成后保存模型
+      if (GameState.neuralAlgorithm.isModelTrained) {
+        await GameState.neuralAlgorithm.saveModel();
+        console.log('神经网络模型训练完成并保存');
+        
+        // 通知训练成功
+        chrome.runtime.sendMessage({
+          action: 'neuralTrainingComplete',
+          success: true
+        });
+      } else {
+        throw new Error('训练完成但模型未标记为已训练，可能训练失败');
+      }
+    } catch (trainError) {
+      console.error('训练模型时出错:', trainError);
+      throw new Error(`训练模型时出错: ${trainError.message}`);
+    }
+    
+  } catch (error) {
+    console.error('训练神经网络模型失败:', error);
+    
+    chrome.runtime.sendMessage({
+      action: 'neuralTrainingComplete',
+      success: false,
+      error: error.message
+    });
+  }
+}
+
+// 生成神经网络训练数据
+async function generateTrainingData() {
+  // 生成100个随机训练样本
+  const sampleSize = 100;
+  const samplePlayers = getRandomSample(GameState.allPlayers, sampleSize);
+  
+  console.log(`开始生成 ${sampleSize} 个训练样本`);
+  GameState.guessHistory = [];
+  
+  // 对每个样本进行模拟猜测
+  for (let i = 0; i < samplePlayers.length; i++) {
+    const targetPlayer = samplePlayers[i];
+    let testCandidates = [...GameState.allPlayers];
+    let guessCountForTest = 0;
+    
+    // 最多尝试5次猜测
+    while (guessCountForTest < 5 && testCandidates.length > 0) {
+      // 使用信息熵算法找到最佳猜测
+      const guess = GameState.algorithm.findBestGuess(testCandidates, GameState.allPlayers);
+      
+      // 模拟反馈
+      const feedback = simulateFeedback(guess, targetPlayer);
+      
+      // 记录猜测历史
+      GameState.guessHistory.push({
+        guessPlayer: guess,
+        feedback: feedback,
+        actualPlayer: targetPlayer
+      });
+      
+      // 如果猜中了，退出循环
+      if (guess.id === targetPlayer.id) {
+        break;
+      }
+      
+      // 过滤候选人
+      const processedFeedback = GameState.algorithm.processGameFeedback({feedback});
+      testCandidates = GameState.algorithm.filterCandidates(testCandidates, guess, processedFeedback);
+      
+      guessCountForTest++;
+    }
+    
+    // 状态更新
+    if (i % 10 === 0) {
+      console.log(`已生成 ${i} 个训练样本，当前历史记录数量: ${GameState.guessHistory.length}`);
+    }
+  }
+  
+  console.log(`训练数据生成完成，共 ${GameState.guessHistory.length} 条记录`);
+  
+  // 保存猜测历史
+  chrome.storage.local.set({ guessHistory: GameState.guessHistory });
+  
+  return GameState.guessHistory;
+}
+
+// 检查TensorFlow.js是否已在页面环境中加载
+function isTensorFlowLoaded() {
+  // ... existing code ...
 }
 
 // 启动插件

@@ -13,6 +13,8 @@ const UI = {
   autoPlayToggle: null,
   algorithmTestButton: null,
   guessIntervalInput: null,
+  algorithmSelect: null,
+  trainModelButton: null,
   
   // 状态显示元素
   playerCountElement: null,
@@ -29,6 +31,12 @@ const UI = {
   failedTestsContainer: null,
   failedTestsList: null,
   
+  // 神经网络元素
+  neuralContainer: null,
+  neuralStatusElement: null,
+  trainingProgressElement: null,
+  trainingBarElement: null,
+  
   /**
    * 初始化 UI 元素引用
    */
@@ -37,6 +45,8 @@ const UI = {
     this.autoPlayToggle = document.getElementById('autoPlayToggle');
     this.algorithmTestButton = document.getElementById('algorithmTestButton');
     this.guessIntervalInput = document.getElementById('guessIntervalInput');
+    this.algorithmSelect = document.getElementById('algorithmSelect');
+    this.trainModelButton = document.getElementById('trainModelButton');
     
     // 获取状态显示元素
     this.playerCountElement = document.getElementById('playerCount');
@@ -52,6 +62,12 @@ const UI = {
     this.avgGuessesElement = document.getElementById('avgGuesses');
     this.failedTestsContainer = document.getElementById('failedTestsContainer');
     this.failedTestsList = document.getElementById('failedTestsList');
+    
+    // 获取神经网络元素
+    this.neuralContainer = document.getElementById('neuralContainer');
+    this.neuralStatusElement = document.getElementById('neuralStatus');
+    this.trainingProgressElement = document.getElementById('trainingProgress');
+    this.trainingBarElement = document.getElementById('trainingBar');
   }
 };
 
@@ -88,9 +104,13 @@ async function initialize() {
  */
 async function loadSettings() {
   try {
-    const settings = await chrome.storage.local.get(['autoPlay', 'guessInterval']);
+    const settings = await chrome.storage.local.get(['autoPlay', 'guessInterval', 'algorithmType']);
     UI.autoPlayToggle.checked = settings.autoPlay || false;
     UI.guessIntervalInput.value = settings.guessInterval || 5000;
+    if (settings.algorithmType) {
+      UI.algorithmSelect.value = settings.algorithmType;
+    }
+    toggleNeuralPanel(UI.algorithmSelect.value === 'neural');
   } catch (error) {
     console.error('加载设置失败:', error);
   }
@@ -108,6 +128,12 @@ function setupEventListeners() {
   
   // 算法测试按钮点击事件
   UI.algorithmTestButton.addEventListener('click', handleAlgorithmTest);
+  
+  // 算法选择事件
+  UI.algorithmSelect.addEventListener('change', handleAlgorithmSelect);
+  
+  // 训练模型按钮点击事件
+  UI.trainModelButton.addEventListener('click', handleTrainModel);
 }
 
 /**
@@ -124,6 +150,54 @@ function handleAutoPlayToggle() {
   
   // 保存设置
   chrome.storage.local.set({ autoPlay: isEnabled });
+}
+
+/**
+ * 处理算法选择变化
+ */
+function handleAlgorithmSelect() {
+  const algorithmType = UI.algorithmSelect.value;
+  
+  // 向内容脚本发送算法类型
+  sendMessageToActiveTab({
+    action: 'setAlgorithmType',
+    value: algorithmType
+  });
+  
+  // 保存设置
+  chrome.storage.local.set({ algorithmType: algorithmType });
+  
+  // 显示/隐藏神经网络控制面板
+  toggleNeuralPanel(algorithmType === 'neural');
+}
+
+/**
+ * 显示/隐藏神经网络控制面板
+ * @param {boolean} show - 是否显示
+ */
+function toggleNeuralPanel(show) {
+  UI.neuralContainer.style.display = show ? 'block' : 'none';
+  
+  if (show) {
+    // 获取神经网络模型状态
+    sendMessageToActiveTab({ action: 'getNeuralStatus' });
+  }
+}
+
+/**
+ * 处理神经网络模型训练
+ */
+function handleTrainModel() {
+  // 禁用训练按钮并显示状态
+  UI.trainModelButton.disabled = true;
+  UI.trainModelButton.textContent = '训练中...';
+  UI.neuralStatusElement.textContent = '开始训练模型...';
+  UI.trainingBarElement.style.width = '0%';
+  
+  // 向内容脚本发送训练命令
+  sendMessageToActiveTab({
+    action: 'trainNeuralModel'
+  });
 }
 
 /**
@@ -188,6 +262,18 @@ function setupMessageListeners() {
       // 恢复按钮状态
       UI.algorithmTestButton.textContent = '本地测试';
       UI.algorithmTestButton.disabled = false;
+    } else if (message.action === 'playerCountUpdate') {
+      // 更新选手数量
+      UI.playerCountElement.textContent = message.count;
+    } else if (message.action === 'neuralStatusUpdate') {
+      // 更新神经网络状态
+      updateNeuralStatus(message.status);
+    } else if (message.action === 'neuralTrainingUpdate') {
+      // 更新训练进度
+      updateTrainingProgress(message.data);
+    } else if (message.action === 'neuralTrainingComplete') {
+      // 训练完成
+      handleTrainingComplete(message);
     }
   });
 }
@@ -321,11 +407,22 @@ function updateUIWithStatus(status) {
     UI.guessIntervalInput.value = status.guessInterval;
   }
   
+  // 更新算法类型
+  if (status.algorithmType !== undefined && UI.algorithmSelect.value != status.algorithmType) {
+    UI.algorithmSelect.value = status.algorithmType;
+    toggleNeuralPanel(status.algorithmType === 'neural');
+  }
+  
   // 更新连接状态
   if (status.connectionActive) {
     UI.gamePhaseElement.classList.add('connected');
   } else {
     UI.gamePhaseElement.classList.remove('connected');
+  }
+  
+  // 更新自动模式开关
+  if (status.autoPlayEnabled !== undefined) {
+    UI.autoPlayToggle.checked = status.autoPlayEnabled;
   }
 }
 
@@ -370,4 +467,61 @@ function handleGuessIntervalChange() {
   
   // 保存设置
   chrome.storage.local.set({ guessInterval: interval });
+}
+
+/**
+ * 更新神经网络状态
+ * @param {Object} status - 状态信息
+ */
+function updateNeuralStatus(status) {
+  if (!status) return;
+  
+  const { isModelTrained, isTraining } = status;
+  
+  if (isTraining) {
+    UI.neuralStatusElement.textContent = '模型正在训练中...';
+    UI.trainModelButton.disabled = true;
+    UI.trainModelButton.textContent = '训练中...';
+  } else if (isModelTrained) {
+    UI.neuralStatusElement.textContent = '模型已训练完成，可以使用';
+    UI.trainModelButton.disabled = false;
+    UI.trainModelButton.textContent = '重新训练';
+  } else {
+    UI.neuralStatusElement.textContent = '模型尚未训练，点击训练按钮开始';
+    UI.trainModelButton.disabled = false;
+    UI.trainModelButton.textContent = '训练模型';
+  }
+}
+
+/**
+ * 更新训练进度
+ * @param {Object} data - 进度数据
+ */
+function updateTrainingProgress(data) {
+  if (!data) return;
+  
+  const { epoch, totalEpochs, loss, accuracy } = data;
+  
+  // 更新进度条
+  const percent = (epoch / totalEpochs) * 100;
+  UI.trainingBarElement.style.width = `${percent}%`;
+  
+  // 更新状态文本
+  UI.neuralStatusElement.textContent = `训练中(${epoch}/${totalEpochs}): 损失=${loss}, 准确率=${accuracy}`;
+}
+
+/**
+ * 处理训练完成
+ * @param {Object} message - 训练完成消息
+ */
+function handleTrainingComplete(message) {
+  UI.trainModelButton.disabled = false;
+  
+  if (message.success) {
+    UI.neuralStatusElement.textContent = '模型训练完成，可以使用';
+    UI.trainModelButton.textContent = '重新训练';
+  } else {
+    UI.neuralStatusElement.textContent = `训练失败: ${message.error || '未知错误'}`;
+    UI.trainModelButton.textContent = '重试训练';
+  }
 } 

@@ -21,7 +21,22 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["algorithm.js", "players.json", "websocket-interceptor.js"],
+      "resources": [
+        "tensorflow.min.js",
+        "websocket-interceptor.js",
+        "algorithm.js",
+        "neural-algorithm.js",
+        "tf-checker.js",
+        "tf-loader.js",
+        "neural-checker.js",
+        "direct-tf-loader.js",
+        "tf-validator.js",
+        "neural-initializer.js",
+        "neural-reinitializer.js",
+        "direct-neural-initializer.js",
+        "tf-status-checker.js",
+        "players.json"
+      ],
       "matches": ["<all_urls>"]
     }
   ],
